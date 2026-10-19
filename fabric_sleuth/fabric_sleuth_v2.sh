@@ -39,6 +39,9 @@ Optional (default)
                    receiver socket, NIC, kernel backlog and unaccounted (likely fabric).
                    With FS_TOS the whole TOS byte, ECN bits included, is sent.
   FS_UDP_DURATION  seconds per UDP run (FS_DURATION)
+  FS_MESH=1        before load, ping every tested host's rail IPs from every other one's (same rail and
+                   cross-rail; tested hosts only, so other clusters on shared subnets are never
+                   probed). Failures go to mesh_failures.txt and the Preflight card.
   FS_PORT          iperf3 port (5201)
   FS_SSH_USER      ssh user; non-root runs remote steps with sudo -n (root)
   FS_SSH_PARALLEL  ssh sessions at once for sweep and collection (64)
@@ -321,6 +324,21 @@ for nic in "$@"; do
 done
 EOF
 
+# Mesh: src_a src_b dst... -> "MESHFAIL src dst" for each rail IP pair that does not answer one ping.
+# 64 pings at a time; "none" skips a missing rail.
+read -r -d '' MESH_SCRIPT <<'EOF'
+a=$1 b=$2; shift 2
+n=0
+for s in $a $b; do
+    [ "$s" = none ] && continue
+    for d in "$@"; do
+        ( out=$(ping -c1 -W1 -I "$s" "$d" 2>&1) || echo "MESHFAIL $s $d" ) &
+        n=$(( n + 1 )); [ $(( n % 64 )) = 0 ] && wait
+    done
+done
+wait
+EOF
+
 # Rail gateways: rail_ip nic df_size peer... -> "DIRECT" or "GW <ip> OK|MTU|FAIL" per distinct gateway
 # that `ip route get <peer> from <rail_ip>` uses (routed fabrics: /31 or per-rail policy tables).
 read -r -d '' GW_SCRIPT <<'EOF'
@@ -464,6 +482,41 @@ gateway_check() {
         log "WARNING: rail gateways that failed (MTU = answers only small pings):"; echo "$bad" | sed 's/^/#   /' >&2
         echo "$bad" | awk '{print $1, "gateway_" $NF, "rail", $2, $3, "gateway", $5}' >> "$COLLECT_DIR/rail_anomalies.txt"
     fi
+}
+
+# FS_MESH=1: every usable rail IP of each tested host pings every other tested host's usable rail IPs.
+mesh_check() {
+    local k j r total=0 a b
+    local -A host_of=()
+    for j in "${ELIG[@]}"; do for r in 0 1; do rail_ok $j $r && host_of[${RIP[$j,$r]}]=${T_HOST[$j]}; done; done
+    log "Mesh: every rail IP pings the ${#host_of[@]} rail IPs of the other tested hosts..."
+    for k in "${ELIG[@]}"; do
+        local -a dst=()
+        for j in "${ELIG[@]}"; do [[ $j != "$k" ]] || continue; for r in 0 1; do rail_ok $j $r && dst+=("${RIP[$j,$r]}"); done; done
+        a=none; b=none; rail_ok $k 0 && a=${RIP[$k,0]}; rail_ok $k 1 && b=${RIP[$k,1]}
+        [[ $a == none && $b == none ]] && continue
+        local srcs=0; [[ $a != none ]] && srcs=$(( srcs + 1 )); [[ $b != none ]] && srcs=$(( srcs + 1 ))
+        total=$(( total + srcs * ${#dst[@]} ))
+        throttle
+        ( rbash "${T_TARGET[$k]}" "$a" "$b" "${dst[@]}" <<<"$MESH_SCRIPT" > "$WORK/mesh.$k" 2>&1 ) &
+    done
+    wait
+    cat "$WORK"/mesh.* 2>&1 | awk '$1 == "MESHFAIL" {print $2, $3}' | while read -r s d; do
+        echo "${host_of[$s]:-?} $s ${host_of[$d]:-?} $d"
+    done | sort -V > "$COLLECT_DIR/mesh_failures.txt"
+    local fails; fails=$(wc -l < "$COLLECT_DIR/mesh_failures.txt" | tr -d ' ')
+    log "Mesh: $total pings, $fails failed"
+    MESH_PINGS=$total; MESH_FAILS=$fails
+    (( fails )) || return 0
+    # a destination failing from many sources points at that rail; scattered failures at paths
+    local ip; for ip in "${!host_of[@]}"; do echo "$ip ${host_of[$ip]}"; done > "$WORK/meship"
+    # sources for a destination = every rail IP except the destination host's own
+    awk 'FNR == 1 {f++} f == 1 {c[$2]++; all++; next}
+         {n[$4]++; h[$4] = $3}
+         END {for (d in n) printf "%s mesh_unreachable rail IP %s did not answer %d of %d pinging rail IPs\n", h[d], d, n[d], all - c[h[d]]}' \
+        "$WORK/meship" "$COLLECT_DIR/mesh_failures.txt" | sort -k7 -rn >> "$COLLECT_DIR/rail_anomalies.txt"
+    log "WARNING: mesh failures by destination (worst first):"
+    awk '{n[$4 " (" $3 ")"]++} END {for (d in n) print n[d], d}' "$COLLECT_DIR/mesh_failures.txt" | sort -rn | head -n 10 | sed 's/^/#   /' >&2
 }
 
 # LLDP: a rail NIC whose switch most hosts reach on the other rail is cabled to the wrong rail.
@@ -680,9 +733,10 @@ main() {
     : "${FS_BUSY_CHECK:=$WEKA_BUSY_CHECK}"
     [[ $FS_BUSY_CHECK == none ]] && FS_BUSY_CHECK=""
     [[ $1 =~ ^[0-9]+$ ]] && FS_DURATION=$1
-    : "${FS_DURATION:=120}" "${FS_UDP:=0}"
+    : "${FS_DURATION:=120}" "${FS_UDP:=0}" "${FS_MESH:=0}"
     : "${FS_UDP_DURATION:=$FS_DURATION}"
     [[ $FS_UDP == 0 || $FS_UDP == 1 ]] || die "FS_UDP must be 0 or 1, got '$FS_UDP'"
+    [[ $FS_MESH == 0 || $FS_MESH == 1 ]] || die "FS_MESH must be 0 or 1, got '$FS_MESH'"
     local v
     for v in FS_DURATION FS_UDP_DURATION FS_ITER FS_STREAMS FS_PORT FS_SSH_PARALLEL FS_SSH_RETRY_PARALLEL FS_MAX_TARGETS FS_OK_PCT FS_SLOW_PCT; do
         [[ ${!v} =~ ^[0-9]+$ ]] && (( ${!v} > 0 )) || die "$v must be a positive integer, got '${!v}'"
@@ -879,6 +933,7 @@ main() {
     done
     rail_consistency
     gateway_check
+    [[ $FS_MESH == 1 ]] && mesh_check
 
     # --- 4. diagnostics ---
     log "Collecting NIC diagnostics..."
@@ -1143,6 +1198,8 @@ main() {
         echo "drop_nics_read_min=$DROP_READS_MIN"
         echo "drop_nics_expected=$(( ${#ELIG[@]} * 2 ))"
         echo "nic_diag_lines=$(wc -l < "$NIC_DIAG" | tr -d ' ')"
+        echo "mesh_pings=${MESH_PINGS:-}"
+        echo "mesh_failures=${MESH_FAILS:-}"
         echo "tool=fabric_sleuth_v2"
     } > "$COLLECT_DIR/metadata.txt"
     for k in "${ELIG[@]}"; do

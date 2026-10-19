@@ -264,12 +264,15 @@ def generate_html(data, output_path):
         gw_bad = [g for g in gws if g[-1] not in ('OK', 'DIRECT')]
         kinds = {'swapped_nics': 'Rail NICs swapped', 'rail_nic_overlap': 'Rail NIC names mixed',
                  'lldp_wrong_rail': "Cabled to the other rail's switch", 'mtu_mismatch': 'MTU differs on a rail',
-                 'gateway_FAIL': 'Rail gateway not answering', 'gateway_MTU': 'Rail gateway answers small pings only'}
+                 'gateway_FAIL': 'Rail gateway not answering', 'gateway_MTU': 'Rail gateway answers small pings only',
+                 'mesh_unreachable': 'Rail IP unreachable in the mesh'}
         rows = ''.join(f"<tr><td>{escape(kinds.get(a[1], a[1]) if len(a) > 1 else '')}</td><td>{escape(a[0])}</td>"
                        f"<td>{escape(a[2] if len(a) > 2 else '')}</td></tr>" for a in data.get('anomalies', []))
         bad = len(data.get('anomalies', []))
+        mp = data['metadata'].get('mesh_pings')
+        mesh_txt = f" | mesh: {data['metadata'].get('mesh_failures', '?')} of {mp} pings failed" if mp else ''
         preflight_html = f"""<div class="card mb-3"><div class="card-header">Preflight: rail layout and gateways |
-<b class="{'stat-bad' if bad else 'stat-good'}">{bad}</b> findings | gateways: {gw_ok} answered a full-MTU ping, {len(gw_bad)} failed, {gw_direct} rails on-link</div>
+<b class="{'stat-bad' if bad else 'stat-good'}">{bad}</b> findings | gateways: {gw_ok} answered a full-MTU ping, {len(gw_bad)} failed, {gw_direct} rails on-link{mesh_txt}</div>
 <div class="card-body" style="max-height:300px; overflow-y:auto;">{'<p class="text-success mb-0">No rail swaps, cross-rail cabling, MTU differences or gateway failures found.</p>' if not bad else
 f'<table class="table table-sm table-striped"><thead><tr><th>Finding</th><th>Host / rail</th><th>Detail</th></tr></thead><tbody>{rows}</tbody></table>'}</div></div>"""
 
