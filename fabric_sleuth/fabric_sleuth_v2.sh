@@ -5,8 +5,11 @@
 
 usage() {
     cat <<'EOF'
-Usage: FS_HOSTS=<targets> FS_RAIL_A=<cidr,...> FS_RAIL_B=<cidr,...> ./iperf3_be_to_be_dual_path.sh [duration_s]
-       FS_HOSTS=<targets> ./iperf3_be_to_be_dual_path.sh --list   (print expanded targets, no ssh)
+Usage: FS_HOSTS=<targets> FS_RAIL_A=<cidr,...> FS_RAIL_B=<cidr,...> ./fabric_sleuth_v2.sh [duration_s]
+       FS_HOSTS=<targets> ./fabric_sleuth_v2.sh --list   (print expanded targets, no ssh)
+From a jump host (settings ride in the remote command; nothing to edit or copy first):
+       ssh jump 'FS_HOSTS=10.1.0.0/24 FS_RAIL_A=... FS_RAIL_B=... bash -s -- 120' < fabric_sleuth_v2.sh
+       The run ends by printing the scp + render line for the tarball it left on the jump host.
 
 Required
   FS_HOSTS   ssh targets, comma or space separated, any mix of:
@@ -39,6 +42,7 @@ Optional (default)
   FS_PORT          iperf3 port (5201)
   FS_SSH_USER      ssh user; non-root runs remote steps with sudo -n (root)
   FS_SSH_PARALLEL  ssh sessions at once for sweep and collection (64)
+  FS_SSH_RETRY_PARALLEL  retry targets that refused ssh under load (reset, kex) this many at a time (8)
   FS_MAX_TARGETS   refuse to expand FS_HOSTS beyond this (4096)
   FS_LABEL         name in the report and tarball (first tested hostname)
   FS_OUT_DIR       where the tarball goes (.)
@@ -555,7 +559,7 @@ main() {
     [[ $1 == -h || $1 == --help ]] && { usage; exit 0; }
 
     : "${FS_ITER:=5}" "${FS_STREAMS:=16}" "${FS_PORT:=5201}" "${FS_SSH_USER:=root}"
-    : "${FS_SSH_PARALLEL:=64}" "${FS_MAX_TARGETS:=4096}" "${FS_OUT_DIR:=.}"
+    : "${FS_SSH_PARALLEL:=64}" "${FS_SSH_RETRY_PARALLEL:=8}" "${FS_MAX_TARGETS:=4096}" "${FS_OUT_DIR:=.}"
     : "${FS_OK_PCT:=75}" "${FS_SLOW_PCT:=50}" "${FS_BUSY_OK:=0}"
     # Default busy check: any WEKA container in STATE Running (docs.weka.io CLI reference, `weka local ps`)
     : "${FS_BUSY_CHECK:=$WEKA_BUSY_CHECK}"
@@ -565,7 +569,7 @@ main() {
     : "${FS_UDP_DURATION:=$FS_DURATION}"
     [[ $FS_UDP == 0 || $FS_UDP == 1 ]] || die "FS_UDP must be 0 or 1, got '$FS_UDP'"
     local v
-    for v in FS_DURATION FS_UDP_DURATION FS_ITER FS_STREAMS FS_PORT FS_SSH_PARALLEL FS_MAX_TARGETS FS_OK_PCT FS_SLOW_PCT; do
+    for v in FS_DURATION FS_UDP_DURATION FS_ITER FS_STREAMS FS_PORT FS_SSH_PARALLEL FS_SSH_RETRY_PARALLEL FS_MAX_TARGETS FS_OK_PCT FS_SLOW_PCT; do
         [[ ${!v} =~ ^[0-9]+$ ]] && (( ${!v} > 0 )) || die "$v must be a positive integer, got '${!v}'"
     done
     (( FS_STREAMS >= 2 )) || die "FS_STREAMS must be >= 2 (iperf3 prints no [SUM] line for one stream)"
@@ -605,6 +609,28 @@ main() {
         ( if rsh "$t" true 2> "$WORK/sweep/$i.err"; then echo "$i" > "$WORK/sweep/$i.ok"; fi ) &
     done
     wait
+    # refusals under fan-out (sshd MaxStartups, kex resets) look like dead hosts: retry those slower
+    local -a retry=()
+    for i in "${!TARGETS[@]}"; do
+        [[ -f $WORK/sweep/$i.ok ]] && continue
+        grep -q -i -E 'connection reset|kex_exchange_identification|ssh_exchange_identification|connection closed by|too many' \
+            "$WORK/sweep/$i.err" && retry+=("$i")
+    done
+    if (( ${#retry[@]} )); then
+        log "Retrying ${#retry[@]} targets that refused under load, $FS_SSH_RETRY_PARALLEL at a time..."
+        local attempt keep=$FS_SSH_PARALLEL; FS_SSH_PARALLEL=$FS_SSH_RETRY_PARALLEL
+        for attempt in 1 2; do
+            for i in "${retry[@]}"; do
+                [[ -f $WORK/sweep/$i.ok ]] && continue
+                throttle; t=${TARGETS[$i]}
+                ( if rsh "$t" true 2> "$WORK/sweep/$i.err"; then echo "$i" > "$WORK/sweep/$i.ok"; fi ) &
+            done
+            wait; sleep 1
+        done
+        FS_SSH_PARALLEL=$keep
+        local rec=0; for i in "${retry[@]}"; do [[ -f $WORK/sweep/$i.ok ]] && rec=$(( rec + 1 )); done
+        log "Retry recovered $rec of ${#retry[@]}"
+    fi
     local -a REACH=()
     for i in "${!TARGETS[@]}"; do
         if [[ -f $WORK/sweep/$i.ok ]]; then REACH+=("$i")
@@ -997,7 +1023,13 @@ main() {
     [[ -n $FS_RUNLOG && -f $FS_RUNLOG ]] && cp "$FS_RUNLOG" "$COLLECT_DIR/run.log"
     COPYFILE_DISABLE=1 tar czf "$tarball" -C "$(dirname "$COLLECT_DIR")" "$(basename "$COLLECT_DIR")" || die "tar failed; data left in $COLLECT_DIR"
     log "Data archive: $tarball ($(du -h "$tarball" | cut -f1))"
-    log "Dashboard:    python3 generate_dashboard_v2.py $tarball"
+    local abs; abs=$(cd "$(dirname "$tarball")" && pwd)/$(basename "$tarball")
+    if [[ -n $SSH_CONNECTION ]]; then   # ran on a jump host: say how to fetch it
+        local srv; srv=$(awk '{print $3}' <<<"$SSH_CONNECTION")
+        log "Fetch and render: scp $(id -un)@$srv:$abs . && python3 generate_dashboard_v2.py $(basename "$tarball")"
+    else
+        log "Render: python3 generate_dashboard_v2.py $abs"
+    fi
     rm -rf "${COLLECT_DIR:?}"
     echo "$RESULT_LINE" >&2
     return $cov_rc
