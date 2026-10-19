@@ -5,7 +5,7 @@ Data plane validation dashboard generator (fabric_sleuth)
 Parses the tar.gz archive produced by iperf3_be_to_be_dual_path.sh
 and generates a self-contained interactive HTML dashboard.
 
-Usage: python3 generate_dashboard.py <run>.tar.gz [output.html]   (default: <run>.html)
+Usage: python3 generate_dashboard.py <run>.tar.gz [output.html]   (default: <run>.html next to the tarball)
 """
 
 import re
@@ -19,7 +19,8 @@ from collections import defaultdict, Counter
 from html import escape
 
 INPUT_FILE = sys.argv[1] if len(sys.argv) > 1 else 'dp_validation.tar.gz'
-OUTPUT_FILE = sys.argv[2] if len(sys.argv) > 2 else re.sub(r"\.tar\.gz$|\.tgz$", "", os.path.basename(INPUT_FILE)) + ".html"
+# default: <run>.html next to the tarball
+OUTPUT_FILE = sys.argv[2] if len(sys.argv) > 2 else re.sub(r"\.tar\.gz$|\.tgz$", "", INPUT_FILE) + ".html"
 
 
 def generate_html(data, output_path):
