@@ -23,6 +23,12 @@ INPUT_FILE = sys.argv[1] if len(sys.argv) > 1 else 'dp_validation.tar.gz'
 OUTPUT_FILE = sys.argv[2] if len(sys.argv) > 2 else re.sub(r"\.tar\.gz$|\.tgz$", "", INPUT_FILE) + ".html"
 
 
+# Pre-FEC BER levels. 2.4e-4 is the correction limit commonly quoted for RS(544,514) "KP4" FEC
+# (IEEE 802.3, 200/400G PAM4); NRZ links on RS(528,514) correct less. The watch level is a heuristic.
+FEC_LIMIT_BER = 2.4e-4
+FEC_WATCH_BER = 1e-5
+
+
 def generate_html(data, output_path):
     """Generate self-contained interactive HTML dashboard."""
 
@@ -258,6 +264,29 @@ def generate_html(data, output_path):
 <div class="card-body" style="max-height:300px; overflow-y:auto;">{'<p class="text-success mb-0">No rail swaps, cross-rail cabling, MTU differences or gateway failures found.</p>' if not bad else
 f'<table class="table table-sm table-striped"><thead><tr><th>Finding</th><th>Host / rail</th><th>Detail</th></tr></thead><tbody>{rows}</tbody></table>'}</div></div>"""
 
+    # FEC over the run: uncorrectable blocks and pre-FEC BER, not lifetime counts
+    fec_html = ''
+    fr = data.get('fec_rate', [])
+    if fr:
+        exposed = [f for f in fr if f['status'] != 'n/a']
+        cnt = {s: sum(1 for f in fr if f['status'] == s) for s in ('UNCORRECTABLE', 'OVER FEC LIMIT', 'WATCH')}
+        show = [f for f in fr if f['status'] not in ('ok', 'n/a')] or exposed[:10]
+        cls = {'UNCORRECTABLE': 'badge-down', 'OVER FEC LIMIT': 'badge-down', 'WATCH': 'badge-slow', 'ok': 'badge-ok'}
+        def fec_row(f):
+            ber = '' if f['ber'] is None else format(f['ber'], '.1e')
+            cb = '' if f['cb'] is None else format(f['cb'], ',')
+            ub = '' if f['ub'] is None else str(f['ub'])
+            return (f"<tr><td>{escape(f['host'])}</td><td>{escape(f['nic'])}</td>"
+                    f"<td><span class='badge {cls.get(f['status'], '')}'>{f['status']}</span></td>"
+                    f"<td>{ber}</td><td>{cb}</td><td>{ub}</td><td>{f['secs']}</td><td>{'yes' if f['reset'] else ''}</td></tr>")
+        rows = ''.join(fec_row(f) for f in show)
+        fec_html = f"""<div class="card mb-3"><div class="card-header">FEC during this run (rate over {max(f['secs'] for f in fr)}s, not lifetime counts) |
+counters on {len(exposed)} of {len(fr)} rail NICs | <b class="{'stat-bad' if cnt['UNCORRECTABLE'] else 'stat-good'}">{cnt['UNCORRECTABLE']}</b> uncorrectable |
+<b class="{'stat-bad' if cnt['OVER FEC LIMIT'] else 'stat-good'}">{cnt['OVER FEC LIMIT']}</b> over the FEC limit | <b class="{'stat-warn' if cnt['WATCH'] else 'stat-good'}">{cnt['WATCH']}</b> watch</div>
+<div class="card-body" style="max-height:320px; overflow-y:auto;">
+<p class="mb-1" style="font-size:0.8rem; color:#8899aa;">Pre-FEC BER = corrected bits / (seconds x link rate). Over limit: at or above {FEC_LIMIT_BER:.1e}, the correction limit commonly quoted for RS(544,514) "KP4" FEC on 200/400G PAM4 links (NRZ links on RS(528,514) correct less). Watch: {FEC_WATCH_BER:.0e}, a heuristic. Any uncorrectable block means errors reached the host.</p>
+<table class="table table-sm table-striped"><thead><tr><th>Host</th><th>NIC</th><th>Status</th><th>Pre-FEC BER</th><th>Corrected blocks</th><th>Uncorrectable</th><th>Seconds</th><th>Counter reset</th></tr></thead><tbody>{rows}</tbody></table></div></div>"""
+
     no_drops_msg = ('<p class="text-warning mb-0">Drop counters were not read on this run: unknown, not zero.</p>'
                     if data.get('drops_unknown') else
                     '<p class="text-success mb-0">No packet drops detected during testing.</p>')
@@ -385,6 +414,7 @@ td.dt-row-num {{ color: #556; font-size: 0.8em; text-align: right; width: 30px; 
 </div>
 {problems_html}
 {preflight_html}
+{fec_html}
 {not_tested_html}
 {udp_html}
 
@@ -456,7 +486,7 @@ td.dt-row-num {{ color: #556; font-size: 0.8em; text-align: right; width: 30px; 
     {'<div class="row g-3 mt-1"><div class="col-12"><div class="card"><div class="card-header text-danger" style="display:flex; justify-content:space-between; align-items:center;">Packet Drops During Testing (' + str(nics_with_drops) + ' NICs affected)<button class="btn btn-sm btn-outline-info" onclick="downloadTableCsv(&#39;dropsTable&#39;,&#39;packet_drops.csv&#39;)">Download CSV</button></div><div class="card-body"><table class="table table-sm table-striped table-hover" id="dropsTable"><thead><tr><th>#</th><th>Host/NIC</th><th>IP</th><th>Rx Dropped<small>ideal 0</small></th><th>Tx Dropped<small>ideal 0</small></th><th>Rx OOB<small>ideal 0</small></th><th>Phases</th></tr></thead><tbody>' + "".join(f"<tr><td></td><td>{d['host_nic']}</td><td>{d['ip']}</td><td>{d['rx_drop']:,}</td><td>{d['tx_drop']:,}</td><td>{d['rx_oob']:,}</td><td>{d['phases']}</td></tr>" for d in drops) + '</tbody></table></div></div></div></div>' if drops else '<div class="row g-3 mt-1"><div class="col-12"><div class="card"><div class="card-header">Packet Drops</div><div class="card-body">' + no_drops_msg + '</div></div></div></div>'}
     <div class="row g-3 mt-1">
         <div class="col-md-6">
-            <div class="card"><div class="card-header">Top 50 FEC Corrected Bits</div>
+            <div class="card"><div class="card-header">Top 50 FEC Corrected Bits (cumulative since the counters last reset; not a rate)</div>
             <div class="card-body"><div id="fecChart" style="height:400px;"></div></div></div>
         </div>
         <div class="col-md-6">
@@ -1742,6 +1772,54 @@ def parse_tar_archive(filepath):
                     entry['diag']['diagnosis'] = 'High FEC correction count — marginal fiber or dirty connector'
             data['slow_ips'].append(entry)
     data['slow_ips'].sort(key=lambda x: x['avg'])
+
+    # FEC as a rate over the run (v2 collector), not a lifetime count
+    speed_of = {}
+    for l in read_file('nic_diagnostics.txt').splitlines():
+        p = l.split()
+        if len(p) >= 4 and re.match(r'^\d+Mb/s$', p[3]):
+            speed_of[f"{p[0]}_{p[1]}"] = int(p[3][:-4]) * 1e6
+    agg = {}
+    for l in read_file('fec_rates.txt').splitlines():
+        p = l.split()
+        if len(p) < 7:
+            continue
+        a = agg.setdefault(p[1], {'secs': 0, 'cb': None, 'ub': None, 'bits': None, 'sym': None, 'reset': False})
+        a['secs'] += _int(p[2]) or 0
+        for key, v in zip(('cb', 'ub', 'bits', 'sym'), p[3:7]):
+            if v == 'reset':
+                a['reset'] = True
+            elif _int(v) is not None:
+                a[key] = (a[key] or 0) + int(v)
+    fec_rate = []
+    for hn, a in agg.items():
+        bps = speed_of.get(hn)
+        ber = a['bits'] / (a['secs'] * bps) if a['bits'] is not None and bps and a['secs'] else None
+        if a['ub']:
+            st = 'UNCORRECTABLE'
+        elif ber is not None and ber >= FEC_LIMIT_BER:
+            st = 'OVER FEC LIMIT'
+        elif ber is not None and ber >= FEC_WATCH_BER:
+            st = 'WATCH'
+        elif a['cb'] is None and a['bits'] is None:
+            st = 'n/a'
+        else:
+            st = 'ok'
+        fec_rate.append({'nic': hn, 'host': nic_host.get(hn, ''), 'secs': a['secs'], 'cb': a['cb'], 'ub': a['ub'],
+                         'bits': a['bits'], 'ber': ber, 'status': st, 'reset': a['reset']})
+    order = {'UNCORRECTABLE': 0, 'OVER FEC LIMIT': 1, 'WATCH': 2, 'ok': 3, 'n/a': 4}
+    fec_rate.sort(key=lambda f: (order[f['status']], -(f['ber'] or 0), -(f['cb'] or 0)))
+    data['fec_rate'] = fec_rate
+    fec_by_nic = {f['nic']: f for f in fec_rate}
+    for e in data['slow_ips']:
+        f = fec_by_nic.get(f"{e['diag'].get('host', '')}_{e['diag'].get('nic', '')}")
+        e['diag'].pop('diagnosis', None)
+        if f and f['status'] == 'UNCORRECTABLE':
+            e['diag']['diagnosis'] = 'Uncorrectable FEC blocks during the run: link errors reach the host'
+        elif f and f['status'] == 'OVER FEC LIMIT':
+            e['diag']['diagnosis'] = f"Pre-FEC BER {f['ber']:.1e} above the RS(544,514) correction limit"
+        elif f and f['status'] == 'WATCH':
+            e['diag']['diagnosis'] = f"Elevated pre-FEC BER {f['ber']:.1e} (watch level, heuristic): check optics and cabling"
 
     # Preflight findings (v2 collector): rail anomalies and rail gateways
     data['anomalies'] = [l.split(None, 2) for l in read_file('rail_anomalies.txt').splitlines() if l.strip()]

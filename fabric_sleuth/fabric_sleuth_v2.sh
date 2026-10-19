@@ -307,6 +307,20 @@ for nic in "$@"; do
 done
 EOF
 
+# FEC counters for the rail NICs ($@): "host_nic corrected_blocks uncorrectable_blocks corrected_bits symbol_errors".
+# Blocks come from the vendor-neutral ethtool -I --show-fec; corrected bits and symbol errors are mlx5 extras. na = not exposed.
+read -r -d '' FEC_SCRIPT <<'EOF'
+h=$(hostname -s)
+num() { awk -v k="$1" '$1 == k {for (i = 2; i <= NF; i++) if ($i ~ /^[0-9]+$/) {print $i; exit}}'; }
+for nic in "$@"; do
+    [ "$nic" = - ] && continue
+    f=$(ethtool -I --show-fec "$nic" 2>&1); s=$(ethtool -S "$nic" 2>&1)
+    cb=$(echo "$f" | num corrected_blocks:); ub=$(echo "$f" | num uncorrectable_blocks:)
+    bits=$(echo "$s" | num rx_corrected_bits_phy:); sym=$(echo "$s" | num rx_pcs_symbol_err_phy:)
+    echo "${h}_${nic} ${cb:-na} ${ub:-na} ${bits:-na} ${sym:-na}"
+done
+EOF
+
 # Rail gateways: rail_ip nic df_size peer... -> "DIRECT" or "GW <ip> OK|MTU|FAIL" per distinct gateway
 # that `ip route get <peer> from <rail_ip>` uses (routed fabrics: /31 or per-rail policy tables).
 read -r -d '' GW_SCRIPT <<'EOF'
@@ -587,6 +601,23 @@ udp_phases() {
         log "  $PHASE loss: ${r[0]} of ${r[1]} datagrams lost ($(awk -v l="${r[0]}" -v s="${r[1]}" 'BEGIN {printf "%.3f", s ? 100 * l / s : 0}')%): receiver socket ${r[2]}, NIC ${r[3]}, kernel backlog ${r[4]}, unaccounted ${r[5]}"
         a=$b
     done
+}
+
+# fec_deltas label seconds: per-NIC FEC counter changes over the iteration, appended to
+# fec_rates.txt as "label host_nic seconds d_corrected_blocks d_uncorrectable_blocks d_corrected_bits d_symbol_errors"
+# (na = not exposed, reset = counter went backwards). Links carry symbols even when idle, so wall time is the right base.
+fec_deltas() {
+    awk -v t="$1" -v s="$2" 'NR==FNR {for (i = 2; i <= 5; i++) p[$1, i] = $i; next}
+        ($1, 2) in p {printf "%s %s %d", t, $1, s
+            for (i = 2; i <= 5; i++) printf " %s", ($i ~ /^[0-9]+$/ && p[$1, i] ~ /^[0-9]+$/) ? ($i + 0 >= p[$1, i] + 0 ? $i - p[$1, i] : "reset") : "na"
+            print ""}' "$WORK/fec_pre" "$WORK/fec_post" > "$WORK/fec_delta"
+    cat "$WORK/fec_delta" >> "$COLLECT_DIR/fec_rates.txt"
+    local seen unc
+    seen=$(awk '$4 ~ /^[0-9]+$/ || $6 ~ /^[0-9]+$/' "$WORK/fec_delta" | wc -l | tr -d ' ')
+    unc=$(awk '$5 ~ /^[0-9]+$/ && $5 > 0 {printf "%s(%s) ", $2, $5}' "$WORK/fec_delta")
+    log "FEC over ${2}s: counters exposed on $seen of $(wc -l < "$WORK/fec_delta" | tr -d ' ') rail NICs"
+    [[ -n $unc ]] && log "WARNING: uncorrectable FEC blocks (errors reach the host): $unc"
+    return 0
 }
 
 collect_drops() {
@@ -925,7 +956,7 @@ main() {
     log "Pairing: round-robin, $per pairs per iteration; $FS_ITER iterations cover $PAIRS_COVERED of $total host pairs$( (( FS_ITER < rounds )) && echo " (all pairs need FS_ITER=$rounds)")"
     (( FS_ITER > rounds )) && log "Iterations past $rounds repeat the pairings from the start"
     [[ -n $FS_TOS ]] && log "Marking: iperf3 -S $FS_TOS = DSCP $(( FS_TOS >> 2 )), ECN bits $(( FS_TOS & 3 )) (TCP: the kernel owns the ECN bits)"
-    : > "$COLLECT_DIR/pairs.txt"; : > "$COLLECT_DIR/prio_counters.txt"
+    : > "$COLLECT_DIR/pairs.txt"; : > "$COLLECT_DIR/prio_counters.txt"; : > "$COLLECT_DIR/fec_rates.txt"
     # rail IP -> host/rail, and host_nic -> host, for the summary and UDP loss placement
     for k in "${ELIG[@]}"; do
         [[ ${RIP[$k,0]} != none ]] && echo "${RIP[$k,0]} ${T_HOST[$k]} A"
@@ -958,6 +989,7 @@ main() {
         local DROPS_PRE=$WORK/drops_pre DROPS_POST=$WORK/drops_post
         collect_drops "$DROPS_PRE"
         collect_counters "$PRIO_SCRIPT" "$WORK/prio_pre"
+        collect_counters "$FEC_SCRIPT" "$WORK/fec_pre"; local fec_t0; fec_t0=$(date +%s)
         for PHASE in 1 2; do
             PHASE_OUT=$WORK/phase.$ITER.$PHASE; : > "$PHASE_OUT"
             [[ $PHASE == 1 ]] && log "Phase 1: A->A and B->B at once" || log "Phase 2: A->B both directions at once"
@@ -977,6 +1009,8 @@ main() {
         local nr; nr=$(wc -l < "$DROPS_POST" | tr -d ' ')   # "0 drops" only means something if NICs were read
         (( DROP_READS_MIN < 0 || nr < DROP_READS_MIN )) && DROP_READS_MIN=$nr
         collect_counters "$PRIO_SCRIPT" "$WORK/prio_post"
+        collect_counters "$FEC_SCRIPT" "$WORK/fec_post"
+        fec_deltas "iter$ITER" $(( $(date +%s) - fec_t0 > 0 ? $(date +%s) - fec_t0 : 1 ))
         # per-priority / pause / ECN counter increases: "iterN host_nic counter delta"
         awk -v it="iter$ITER" 'NR==FNR {pre[$1" "$2]=$3; next}
             ($1" "$2) in pre && $3 > pre[$1" "$2] {print it, $1, $2, $3 - pre[$1" "$2]}' \
