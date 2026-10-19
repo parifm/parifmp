@@ -589,6 +589,7 @@ main() {
     trap '' PIPE   # a dead log tee must not abort the run: log writes just fail, results go to files
     parse_rails
     log "Begin $(date) | ${#TARGETS[@]} targets | rails: $RAIL_MODE A=${RAIL_SPEC[0]// /,} B=${RAIL_SPEC[1]// /,} | ${FS_DURATION}s x $FS_ITER iterations"
+    log "Temp: $WORK $SOCKET_DIR $COLLECT_DIR $FS_RUNLOG (all removed at the end; the collect dir is kept if a run is cut short)"
 
     # --- 1. reachability sweep (capped) ---
     local i t
