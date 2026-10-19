@@ -51,6 +51,12 @@ Optional (default)
                    isn't installed. Other example: 'systemctl is-active --quiet myservice'.
                    none = no check.
   FS_BUSY_OK=1     run even where FS_BUSY_CHECK says in use (stop the cluster's I/O first)
+  FS_EXPECT_HOSTS  hosts that should be tested; fewer makes the coverage PARTIAL
+                   (default: every target for a plain host list, the hosts found on
+                   the rails when FS_HOSTS has a CIDR or range)
+
+Result: the last line is "RESULT coverage=COMPLETE|PARTIAL|NONE hosts=t/e paths=r/p ...";
+exit 0 = COMPLETE, 3 = PARTIAL, 4 = NONE (no throughput result at all), 2 = stopped early.
 EOF
 }
 
@@ -87,6 +93,7 @@ in_cidr() {  # ip cidr; no subshells, it runs per address per host
 declare -A _CIDR_CACHE=()
 
 declare -a TARGETS=()
+INPUT_RANGES=0   # 1 once FS_HOSTS has a CIDR or range: unanswered addresses are then normal
 declare -A _SEEN=()
 _emit() {
     [[ -n ${_SEEN[$1]+x} ]] && return
@@ -104,6 +111,7 @@ expand_entry() {
         b=$(cidr_bounds "$e") || die "bad CIDR: '$e'"
         lo=${b% *}; hi=${b#* }
         (( hi - lo >= 2 )) && { lo=$(( lo + 1 )); hi=$(( hi - 1 )); }
+        (( hi > lo )) && INPUT_RANGES=1
         _need $(( hi - lo + 1 )) "$e"
         for (( n = lo; n <= hi; n++ )); do _emit "$(int2ip $n)"; done
     elif [[ $e =~ ^([0-9.]+)-([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
@@ -111,6 +119,7 @@ expand_entry() {
         is_ip "$from" && is_ip "$to" || die "bad IP range: '$e'"
         lo=$(ip2int "$from"); hi=$(ip2int "$to")
         (( lo <= hi )) || die "range runs backwards: '$e'"
+        (( hi > lo )) && INPUT_RANGES=1
         _need $(( hi - lo + 1 )) "$e"
         for (( n = lo; n <= hi; n++ )); do _emit "$(int2ip $n)"; done
     elif [[ $e =~ ^[0-9]+(-[0-9]+)?\.[0-9]+(-[0-9]+)?\.[0-9]+(-[0-9]+)?\.[0-9]+(-[0-9]+)?$ ]]; then
@@ -123,6 +132,7 @@ expand_entry() {
             count=$(( count * (hi4[i] - lo4[i] + 1) ))
         done
         unset IFS
+        (( count > 1 )) && INPUT_RANGES=1
         _need $count "$e"
         for (( a = lo4[0]; a <= hi4[0]; a++ )); do for (( b = lo4[1]; b <= hi4[1]; b++ )); do
         for (( c = lo4[2]; c <= hi4[2]; c++ )); do for (( d = lo4[3]; d <= hi4[3]; d++ )); do
@@ -532,7 +542,7 @@ cleanup() {
     done
     wait
     if [[ -z $DONE ]]; then
-        if [[ -n $LOADED ]]; then log "Run did not finish; partial data left in $COLLECT_DIR"
+        if [[ -n $LOADED ]]; then { [[ -f $FS_RUNLOG ]] && cp "$FS_RUNLOG" "$COLLECT_DIR/run.log"; log "Run did not finish; partial data left in $COLLECT_DIR"; }
         else rm -rf "${COLLECT_DIR:?}"; fi
     fi
     rm -rf "${SOCKET_DIR:?}" "${WORK:?}"
@@ -560,6 +570,7 @@ main() {
     done
     (( FS_STREAMS >= 2 )) || die "FS_STREAMS must be >= 2 (iperf3 prints no [SUM] line for one stream)"
     [[ -z $FS_LINE_GBPS || $FS_LINE_GBPS =~ ^[0-9]+$ ]] || die "FS_LINE_GBPS must be an integer"
+    [[ -z $FS_EXPECT_HOSTS || $FS_EXPECT_HOSTS =~ ^[1-9][0-9]*$ ]] || die "FS_EXPECT_HOSTS must be a positive integer"
     [[ -z $FS_TOS || ( $FS_TOS =~ ^[0-9]{1,3}$ && 10#$FS_TOS -le 255 ) ]] || die "FS_TOS must be 0-255 (decimal), got '$FS_TOS'"
     [[ -n $FS_TOS ]] && FS_TOS=$(( 10#$FS_TOS ))
 
@@ -575,8 +586,6 @@ main() {
     COLLECT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/dp_validation_XXXXXX")
     RAW_DIR=$COLLECT_DIR/raw_per_host; mkdir -p "$RAW_DIR" "$WORK/disc" "$WORK/sweep"
     RUNLOG_SSH=$COLLECT_DIR/ssh_errors.log
-    exec 2> >(tee -a "$COLLECT_DIR/run.log" >&2)
-    : &  # bash 5.1+: a bare `wait` blocks on the tee above while it is still $!
 
     SUDO=""; [[ $FS_SSH_USER == root ]] || SUDO="sudo -n"
     SSH_OPTS=(-o ControlMaster=auto -o ControlPersist=15m -o "ControlPath=$SOCKET_DIR/%C"
@@ -787,6 +796,7 @@ main() {
     local rounds=$(( ${#ROT[@]} - 1 )) per=$(( n / 2 )) total=$(( n * (n - 1) / 2 ))
     local used=$(( FS_ITER < rounds ? FS_ITER : rounds ))
     PAIRS_COVERED=$(( used * per )); PAIRS_TOTAL=$total
+    PATHS_PLANNED=0; DROP_READS_MIN=-1
     log "Pairing: round-robin, $per pairs per iteration; $FS_ITER iterations cover $PAIRS_COVERED of $total host pairs$( (( FS_ITER < rounds )) && echo " (all pairs need FS_ITER=$rounds)")"
     (( FS_ITER > rounds )) && log "Iterations past $rounds repeat the pairings from the start"
     [[ -n $FS_TOS ]] && log "Marking: iperf3 -S $FS_TOS = DSCP $(( FS_TOS >> 2 )), ECN bits $(( FS_TOS & 3 )) (TCP: the kernel owns the ECN bits)"
@@ -806,6 +816,7 @@ main() {
     fi
     for (( ITER = 1; ITER <= FS_ITER; ITER++ )); do
         round_pairs $(( (ITER - 1) % rounds ))
+        PATHS_PLANNED=$(( PATHS_PLANNED + 4 * ${#PC[@]} ))
         log "============ Iteration $ITER of $FS_ITER (${#PC[@]} pairs) ============"
         [[ -n $SITOUT ]] && log "Sits out this iteration (odd host count): ${T_HOST[$SITOUT]}"
         for (( p = 0; p < ${#PC[@]}; p++ )); do echo "$ITER ${T_HOST[${PC[p]}]} ${T_HOST[${PS[p]}]}"; done >> "$COLLECT_DIR/pairs.txt"
@@ -838,6 +849,8 @@ main() {
         done
         [[ $FS_UDP == 1 ]] && udp_phases
         collect_drops "$DROPS_POST"
+        local nr; nr=$(wc -l < "$DROPS_POST" | tr -d ' ')   # "0 drops" only means something if NICs were read
+        (( DROP_READS_MIN < 0 || nr < DROP_READS_MIN )) && DROP_READS_MIN=$nr
         collect_counters "$PRIO_SCRIPT" "$WORK/prio_post"
         # per-priority / pause / ECN counter increases: "iterN host_nic counter delta"
         awk -v it="iter$ITER" 'NR==FNR {pre[$1" "$2]=$3; next}
@@ -923,6 +936,21 @@ main() {
         echo "=================================================================="
     } >&2
 
+    # --- 8. coverage verdict: never a clean result on partial or empty data ---
+    local expect hosts_tested paths_ok skipped noresult coverage cov_rc
+    if [[ -n $FS_EXPECT_HOSTS ]]; then expect=$FS_EXPECT_HOSTS
+    elif (( INPUT_RANGES )); then expect=${#ELIG[@]}
+    else expect=$(( ${#TARGETS[@]} - dups )); fi
+    hosts_tested=$(grep 'Gbits/sec' "$RESULTS" | awk -F'[, ]+' 'NR==FNR {h[$1]=$2; next} {print h[$1]; print h[$2]}' "$WORK/ipmap" - | sort -u | grep -c .)
+    paths_ok=$(grep -c 'Gbits/sec' "$RESULTS")
+    skipped=$(awk '$2 ~ /^[12]$/' "$PATH_EXCL" | wc -l | tr -d ' ')
+    noresult=$(grep -c ',ERROR' "$RESULTS")
+    if (( paths_ok == 0 )); then coverage=NONE; cov_rc=4
+    elif (( hosts_tested >= expect && paths_ok >= PATHS_PLANNED )); then coverage=COMPLETE; cov_rc=0
+    else coverage=PARTIAL; cov_rc=3; fi
+    local RESULT_LINE="RESULT coverage=$coverage hosts=$hosts_tested/$expect paths=$paths_ok/$PATHS_PLANNED skipped=$skipped no_result=$noresult"
+    (( INPUT_RANGES )) && [[ -z $FS_EXPECT_HOSTS ]] && RESULT_LINE+=" (hosts expected = hosts found on the rails; set FS_EXPECT_HOSTS to check for missing ones)"
+
     local ts; ts=$(date -u +%Y%m%dT%H%M%SZ)
     {
         echo "label=$LABEL"
@@ -948,6 +976,15 @@ main() {
         echo "pairs_total=$PAIRS_TOTAL"
         echo "udp=$FS_UDP"
         echo "udp_duration=$FS_UDP_DURATION"
+        echo "coverage=$coverage"
+        echo "hosts_expected=$expect"
+        echo "hosts_tested=$hosts_tested"
+        echo "paths_planned=$PATHS_PLANNED"
+        echo "paths_ok=$paths_ok"
+        echo "drop_nics_read_min=$DROP_READS_MIN"
+        echo "drop_nics_expected=$(( ${#ELIG[@]} * 2 ))"
+        echo "nic_diag_lines=$(wc -l < "$NIC_DIAG" | tr -d ' ')"
+        echo "tool=fabric_sleuth_v2"
     } > "$COLLECT_DIR/metadata.txt"
     for k in "${ELIG[@]}"; do
         echo "${T_HOST[$k]} ${T_TARGET[$k]} ${RIP[$k,0]} ${RIP[$k,1]} ${RNIC[$k,0]} ${RNIC[$k,1]}"
@@ -957,12 +994,23 @@ main() {
     local tarball=$FS_OUT_DIR/fabric_sleuth_${LABEL}_${ts}.tar.gz
     stop_servers
     DONE=1
+    [[ -n $FS_RUNLOG && -f $FS_RUNLOG ]] && cp "$FS_RUNLOG" "$COLLECT_DIR/run.log"
     COPYFILE_DISABLE=1 tar czf "$tarball" -C "$(dirname "$COLLECT_DIR")" "$(basename "$COLLECT_DIR")" || die "tar failed; data left in $COLLECT_DIR"
     log "Data archive: $tarball ($(du -h "$tarball" | cut -f1))"
-    log "Dashboard:    python3 generate_dashboard.py $tarball"
+    log "Dashboard:    python3 generate_dashboard_v2.py $tarball"
     rm -rf "${COLLECT_DIR:?}"
+    echo "$RESULT_LINE" >&2
+    return $cov_rc
 }
 
 START_TS=$(date -u +%Y%m%dT%H%M%SZ)
-# run when executed or fed on stdin (ssh jump 'bash -s' < script: BASH_SOURCE is empty); not when sourced
-if [[ ${#BASH_SOURCE[@]} -eq 0 || ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; fi
+# Run when executed or fed on stdin (ssh jump 'bash -s' < script: BASH_SOURCE is empty); not when sourced.
+# stderr is copied to the run log by tee in a pipeline, not a process substitution: bash 5.1's
+# bare `wait` also waits for a process substitution, which never exits while main runs.
+# tee ignores SIGINT so an interrupted run's cleanup can still write.
+if [[ ${#BASH_SOURCE[@]} -eq 0 || ${BASH_SOURCE[0]} == "$0" ]]; then
+    FS_RUNLOG=$(mktemp "${TMPDIR:-/tmp}/fs_runlog.XXXXXX") || exit 2
+    { main "$@" 2>&1 1>&3 3>&- | ( trap '' INT; exec tee -a "$FS_RUNLOG" >&2 3>&- ); rc=${PIPESTATUS[0]}; } 3>&1
+    rm -f "$FS_RUNLOG"
+    exit "$rc"
+fi

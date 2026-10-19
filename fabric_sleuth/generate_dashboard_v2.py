@@ -240,6 +240,22 @@ def generate_html(data, output_path):
     needs_repair = total_ips - healthy_ips - functional_ips
 
     # Paths, rails and hosts the run could not test, with the reason
+    no_drops_msg = ('<p class="text-warning mb-0">Drop counters were not read on this run: unknown, not zero.</p>'
+                    if data.get('drops_unknown') else
+                    '<p class="text-success mb-0">No packet drops detected during testing.</p>')
+
+    # Fail-loud banner: incomplete or empty data must not read as a clean result
+    problems_html = ''
+    if data.get('problems') or data.get('notes'):
+        items = ''.join(f'<li>{escape(p)}</li>' for p in data.get('problems', []))
+        nts = ''.join(f'<li style="color:#ffc107;">{escape(n)}</li>' for n in data.get('notes', []))
+        head = ('INCOMPLETE RESULT: do not read this dashboard as a clean bill of health'
+                if data.get('problems') else 'Notes on this run')
+        border = '#e94560' if data.get('problems') else '#ffc107'
+        problems_html = (f'<div class="card mb-3" style="border:2px solid {border};"><div class="card-header" '
+                         f'style="color:{border}; font-weight:700;">{head}</div><div class="card-body"><ul class="mb-0">'
+                         f'{items}{nts}</ul></div></div>')
+
     # UDP pass: loss placed per receiving host and phase; unaccounted = likely fabric
     udp_html = ''
     ok_rows = [u for u in data.get('udp', []) if 'error' not in u]
@@ -349,6 +365,7 @@ td.dt-row-num {{ color: #556; font-size: 0.8em; text-align: right; width: 30px; 
         <b class="{'stat-good' if not data['not_tested'] else 'stat-bad'}">{len(data['not_tested'])}</b> not tested
     </span>
 </div>
+{problems_html}
 {not_tested_html}
 {udp_html}
 
@@ -417,7 +434,7 @@ td.dt-row-num {{ color: #556; font-size: 0.8em; text-align: right; width: 30px; 
             </div></div>
         </div>
     </div>
-    {'<div class="row g-3 mt-1"><div class="col-12"><div class="card"><div class="card-header text-danger" style="display:flex; justify-content:space-between; align-items:center;">Packet Drops During Testing (' + str(nics_with_drops) + ' NICs affected)<button class="btn btn-sm btn-outline-info" onclick="downloadTableCsv(&#39;dropsTable&#39;,&#39;packet_drops.csv&#39;)">Download CSV</button></div><div class="card-body"><table class="table table-sm table-striped table-hover" id="dropsTable"><thead><tr><th>#</th><th>Host/NIC</th><th>IP</th><th>Rx Dropped<small>ideal 0</small></th><th>Tx Dropped<small>ideal 0</small></th><th>Rx OOB<small>ideal 0</small></th><th>Phases</th></tr></thead><tbody>' + "".join(f"<tr><td></td><td>{d['host_nic']}</td><td>{d['ip']}</td><td>{d['rx_drop']:,}</td><td>{d['tx_drop']:,}</td><td>{d['rx_oob']:,}</td><td>{d['phases']}</td></tr>" for d in drops) + '</tbody></table></div></div></div></div>' if drops else '<div class="row g-3 mt-1"><div class="col-12"><div class="card"><div class="card-header">Packet Drops</div><div class="card-body"><p class="text-success mb-0">No packet drops detected during testing.</p></div></div></div></div>'}
+    {'<div class="row g-3 mt-1"><div class="col-12"><div class="card"><div class="card-header text-danger" style="display:flex; justify-content:space-between; align-items:center;">Packet Drops During Testing (' + str(nics_with_drops) + ' NICs affected)<button class="btn btn-sm btn-outline-info" onclick="downloadTableCsv(&#39;dropsTable&#39;,&#39;packet_drops.csv&#39;)">Download CSV</button></div><div class="card-body"><table class="table table-sm table-striped table-hover" id="dropsTable"><thead><tr><th>#</th><th>Host/NIC</th><th>IP</th><th>Rx Dropped<small>ideal 0</small></th><th>Tx Dropped<small>ideal 0</small></th><th>Rx OOB<small>ideal 0</small></th><th>Phases</th></tr></thead><tbody>' + "".join(f"<tr><td></td><td>{d['host_nic']}</td><td>{d['ip']}</td><td>{d['rx_drop']:,}</td><td>{d['tx_drop']:,}</td><td>{d['rx_oob']:,}</td><td>{d['phases']}</td></tr>" for d in drops) + '</tbody></table></div></div></div></div>' if drops else '<div class="row g-3 mt-1"><div class="col-12"><div class="card"><div class="card-header">Packet Drops</div><div class="card-body">' + no_drops_msg + '</div></div></div></div>'}
     <div class="row g-3 mt-1">
         <div class="col-md-6">
             <div class="card"><div class="card-header">Top 50 FEC Corrected Bits</div>
@@ -1707,6 +1724,38 @@ def parse_tar_archive(filepath):
             data['slow_ips'].append(entry)
     data['slow_ips'].sort(key=lambda x: x['avg'])
 
+    # Problems make the run fail loudly (red banner, exit 3); notes are shown, not failed on
+    meta = data['metadata']
+    problems, notes = [], []
+    if not data['iperf_results']:
+        problems.append('No throughput results in this archive.')
+    try:
+        want = int(meta.get('iterations', 0))
+    except ValueError:
+        want = 0
+    seen = {r['iteration'] for r in data['iperf_results']}
+    missing = [i for i in range(1, want + 1) if i not in seen]
+    if data['iperf_results'] and missing:
+        problems.append(f'Iterations with no results: {missing} of {want}.')
+    cov = meta.get('coverage')
+    if cov and cov != 'COMPLETE':
+        problems.append(f"Collector coverage {cov}: hosts tested {meta.get('hosts_tested', '?')}/{meta.get('hosts_expected', '?')}, "
+                        f"paths with a result {meta.get('paths_ok', '?')}/{meta.get('paths_planned', '?')} (see Not tested).")
+    hosts = _int(meta.get('total_hosts')) or 0
+    if hosts and data['nic_inventory']['total'] == 0:
+        problems.append('No NIC diagnostics were collected.')
+    reads = _int(meta.get('drop_nics_read_min'))
+    data['drops_unknown'] = reads == 0
+    if reads == 0 and hosts:
+        problems.append('Drop counters were not read: "no drops" here would mean unknown.')
+    elif reads is not None and reads < (_int(meta.get('drop_nics_expected')) or 0):
+        notes.append(f"Drop counters read on {reads} of {meta.get('drop_nics_expected')} rail NICs in at least one iteration.")
+    if data['lldp_info'] and all(l['switch'] == 'unknown' for l in data['lldp_info']):
+        notes.append('No LLDP neighbours seen (lldpd not running, or the switches do not send LLDP): the switch view is empty.')
+    if 'coverage' not in meta:
+        notes.append('Archive from a collector without coverage counts (v1 or earlier): only result and iteration checks apply.')
+    data['problems'], data['notes'] = problems, notes
+
     # Cleanup
     shutil.rmtree(tmpdir, ignore_errors=True)
 
@@ -1734,3 +1783,10 @@ if __name__ == '__main__':
     print(f"  Iterations: {sorted(iters) if iters else 'none'}")
     print(f"Generating {OUTPUT_FILE}...")
     generate_html(data, OUTPUT_FILE)
+    for n in data['notes']:
+        print(f"  NOTE: {n}")
+    if data['problems']:
+        for p in data['problems']:
+            print(f"  PROBLEM: {p}", file=sys.stderr)
+        print("Dashboard written, but the data is incomplete (exit 3).", file=sys.stderr)
+        sys.exit(3)
