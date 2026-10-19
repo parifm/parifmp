@@ -722,7 +722,9 @@ main() {
     for rr in 0 1; do
         local mt; mt=$(for k in "${ELIG[@]}"; do rail_ok $k $rr && echo "${RMTU[$k,$rr]:-?} ${T_HOST[$k]}"; done |
             awk '{if (!($1 in n)) d++; n[$1]++; h[$1] = h[$1] " " $2} END {if (d < 2) exit; for (m in n) if (n[m] > b) {b = n[m]; mm = m}
-                 printf "most at %s;", mm; for (m in n) if (m != mm) printf " %s on%s;", m, h[m]}')
+                 t = 0; for (m in n) if (n[m] == b) t++
+                 if (t > 1) {printf "no majority:"; for (m in n) printf " %s on%s;", m, h[m]}
+                 else {printf "most at %s;", mm; for (m in n) if (m != mm) printf " %s on%s;", m, h[m]}}')
         [[ -n $mt ]] && log "WARNING: rail $( [[ $rr == 0 ]] && echo A || echo B) MTUs differ: $mt paths across them fail the no-fragment check and are skipped"
     done
 
@@ -748,7 +750,7 @@ main() {
         LINE_GBPS=$(awk '$4 ~ /^[0-9]+Mb\/s$/ {sub(/Mb\/s/,"",$4); n[$4/1000]++} END {for (s in n) if (n[s] > b) {b = n[s]; m = s} print m}' "$NIC_DIAG")
     fi
     if [[ -n $LINE_GBPS ]]; then
-        log "Link speed for cut-offs: ${LINE_GBPS}G (OK >= $(( LINE_GBPS * FS_OK_PCT / 100 ))G, SLOW >= $(( LINE_GBPS * FS_SLOW_PCT / 100 ))G)"
+        log "Link speed for cut-offs: ${LINE_GBPS}G ($(awk -v l="$LINE_GBPS" -v o="$FS_OK_PCT" -v s="$FS_SLOW_PCT" 'BEGIN {printf "OK >= %gG, SLOW >= %gG", l * o / 100, l * s / 100}'))"
         awk -v want="$(( LINE_GBPS * 1000 ))Mb/s" '$4 ~ /^[0-9]+Mb\/s$/ && $4 != want {printf "#   %s %s %s\n", $1, $2, $4}' "$NIC_DIAG" > "$WORK/offspeed"
         [[ -s $WORK/offspeed ]] && { log "NICs not at ${LINE_GBPS}G:"; cat "$WORK/offspeed" >&2; }
     else
