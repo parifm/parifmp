@@ -44,6 +44,16 @@ def generate_html(data, output_path):
     results = data['iperf_results']
     L = data['line_rate']
     G, F, M, S = (data['tiers'][k] for k in ('G', 'F', 'M', 'S'))
+    # an IP is judged by its rail's rate, a run by the slower of its two rails; charts keep one scale
+    rt = data.get('rail_tiers', {})
+    def tip(ip, k):
+        return rt.get(data.get('ip_rail', {}).get(ip), data['tiers'])[k]
+    def tpath(r, k):
+        return min(tip(r['src'], k), tip(r['dst'], k))
+    rr = data.get('rail_rate', {})
+    rail_note = (f" | rails differ: A {rr['A']}G, B {rr['B']}G (tables judge each IP by its rail; charts use {L}G)"
+                 if rr and rr.get('A') != rr.get('B') else '')
+    at_l = f'{L}G' if not rail_note else 'rail speed'
     label = data['metadata'].get('label', 'Fabric')
     speeds = sorted([r['gbps'] for r in results]) if results else []
     count = len(speeds)
@@ -81,7 +91,7 @@ def generate_html(data, output_path):
         ip_stats[r['src']].append(r['gbps'])
         ip_stats[r['dst']].append(r['gbps'])
     ip_avgs = {ip: sum(v)/len(v) for ip, v in ip_stats.items()}
-    slow_ip_count = sum(1 for v in ip_avgs.values() if v < F)
+    slow_ip_count = sum(1 for ip, v in ip_avgs.items() if v < tip(ip, 'F'))
 
     # Per-iteration stats for box plot
     iter_data = defaultdict(list)
@@ -89,7 +99,7 @@ def generate_html(data, output_path):
         iter_data[r['iteration']].append(r['gbps'])
 
     # Bottom 50 results
-    bottom_50 = sorted(results, key=lambda r: r['gbps'])[:50]
+    bottom_50 = sorted(results, key=lambda r: r['gbps'] / (tpath(r, 'F') or 1))[:50]
 
     # All results for searchable table
     all_results_json = json.dumps(results)
@@ -250,8 +260,8 @@ def generate_html(data, output_path):
 
     # Connection-level stats: how many unique IPs, how many healthy
     total_ips = len(ip_avgs)
-    healthy_ips = sum(1 for v in ip_avgs.values() if v >= G)
-    functional_ips = sum(1 for v in ip_avgs.values() if F <= v < G)
+    healthy_ips = sum(1 for ip, v in ip_avgs.items() if v >= tip(ip, 'G'))
+    functional_ips = sum(1 for ip, v in ip_avgs.items() if tip(ip, 'F') <= v < tip(ip, 'G'))
     needs_repair = total_ips - healthy_ips - functional_ips
 
     # Paths, rails and hosts the run could not test, with the reason
@@ -429,7 +439,7 @@ td.dt-row-num {{ color: #556; font-size: 0.8em; text-align: right; width: 30px; 
 <!-- Header — single compact line -->
 <div style="background:#0f3460; padding:10px 20px; margin-bottom:12px; border-radius:6px; border:1px solid #0f3460; display:flex; flex-wrap:wrap; align-items:baseline; gap:6px 20px;">
     <span style="color:#4ecca3; font-size:1.1rem; font-weight:700;">{label} Data Plane Validation</span>
-    <span style="color:#8899aa; font-size:0.85rem;">{timestamp} | line rate {L}G ({data['line_rate_src']})</span>
+    <span style="color:#8899aa; font-size:0.85rem;">{timestamp} | line rate {L}G ({data['line_rate_src']}){rail_note}</span>
     <span style="color:#e0e0e0; font-size:0.85rem;">
         <b class="stat-info">{total_ips}</b> connections |
         <b class="stat-good">{healthy_ips}</b> healthy (&ge;{G}G) |
@@ -484,8 +494,8 @@ td.dt-row-num {{ color: #556; font-size: 0.8em; text-align: right; width: 30px; 
     <div class="row g-3">
         <div class="col-md-4">
             <div class="card"><div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">NIC Inventory<button class="btn btn-sm btn-outline-info" onclick="downloadTableCsv('not400Table','nic_not400g.csv')">Download CSV</button></div><div class="card-body">
-                <p>Total NICs: <strong>{data['nic_inventory']['total']}</strong> | At {L}G: <strong class="text-success">{data['nic_inventory']['at_line']}</strong> | Not {L}G: <strong class="text-danger">{len(data['nic_inventory']['not_line'])}</strong> | Speed unknown: <strong>{data['nic_inventory']['unknown']}</strong></p>
-                <h6 class="text-danger mt-3">Down / Not-{L}G / speed-unknown NICs</h6>
+                <p>Total NICs: <strong>{data['nic_inventory']['total']}</strong> | At {at_l}: <strong class="text-success">{data['nic_inventory']['at_line']}</strong> | Not {at_l}: <strong class="text-danger">{len(data['nic_inventory']['not_line'])}</strong> | Speed unknown: <strong>{data['nic_inventory']['unknown']}</strong></p>
+                <h6 class="text-danger mt-3">Down / Not-{at_l} / speed-unknown NICs</h6>
                 <table class="table table-sm table-striped" id="not400Table">
                 <thead><tr><th>Host</th><th>NIC</th><th>IP</th><th>Speed<small>expected {L}G</small></th></tr></thead>
                 <tbody>
@@ -582,7 +592,7 @@ td.dt-row-num {{ color: #556; font-size: 0.8em; text-align: right; width: 30px; 
                 <table class="table table-striped table-hover table-sm" id="bottomTable">
                 <thead><tr><th>#</th><th>Host A</th><th>IP A</th><th>Host B</th><th>IP B</th><th>Gbps<small>expected {L}</small></th><th>Retrans<small>ideal 0</small></th><th>GBytes</th></tr></thead>
                 <tbody>
-                {''.join(f"<tr><td></td><td>{h(r['src'])}</td><td>{r['src']}</td><td>{h(r['dst'])}</td><td>{r['dst']}</td><td><span class='badge {'badge-ok' if r['gbps']>=G else 'badge-func' if r['gbps']>=F else 'badge-slow' if r['gbps']>=S else 'badge-down'}'>{r['gbps']}</span></td><td>{'<span class=badge-down>' + str(r.get('retransmits',0)) + '</span>' if r.get('retransmits',0) > 0 else '0'}</td><td>{r['gbytes']}</td></tr>" for r in bottom_50)}
+                {''.join(f"<tr><td></td><td>{h(r['src'])}</td><td>{r['src']}</td><td>{h(r['dst'])}</td><td>{r['dst']}</td><td><span class='badge {'badge-ok' if r['gbps']>=tpath(r, 'G') else 'badge-func' if r['gbps']>=tpath(r, 'F') else 'badge-slow' if r['gbps']>=tpath(r, 'S') else 'badge-down'}'>{r['gbps']}</span></td><td>{'<span class=badge-down>' + str(r.get('retransmits',0)) + '</span>' if r.get('retransmits',0) > 0 else '0'}</td><td>{r['gbytes']}</td></tr>" for r in bottom_50)}
                 </tbody></table>
             </div></div>
         </div>
@@ -1686,13 +1696,31 @@ def parse_tar_archive(filepath):
     speeds = [l.split()[3] for l in read_file('nic_diagnostics.txt').splitlines()
               if len(l.split()) >= 4 and re.match(r'^\d+Mb/s$', l.split()[3])]
     lr = data['metadata'].get('line_rate_gbps', '')
+    # most common speed, the higher one on a tie (deterministic, and tests the upper limit)
+    def _mode(sp):
+        return int(max(set(sp), key=lambda x: (sp.count(x), int(x[:-4])))[:-4]) // 1000
     if lr.isdigit():
         line_gbps, data['line_rate_src'] = int(lr), 'collector'
     elif speeds:
-        line_gbps = int(max(set(speeds), key=speeds.count)[:-4]) // 1000
+        line_gbps = _mode(speeds)
         data['line_rate_src'] = 'most common NIC speed'
     else:
         line_gbps, data['line_rate_src'] = 0, 'best run seen (no NIC speed data)'
+    # per-rail line rate (rails can run at different speeds); older collectors give one rate for both
+    ip_rail = {}
+    for l in read_file('rails.txt').splitlines()[1:]:
+        q = l.split()
+        if len(q) >= 8:
+            ip_rail[q[3]], ip_rail[q[7]] = 'A', 'B'
+    rail_rate = {}
+    for r in ('A', 'B'):
+        v = data['metadata'].get(f'line_rate_{r.lower()}_gbps', '')
+        rs = [l.split()[3] for l in read_file('nic_diagnostics.txt').splitlines()
+              if len(l.split()) >= 4 and ip_rail.get(l.split()[2]) == r and re.match(r'^\d+Mb/s$', l.split()[3])]
+        rail_rate[r] = int(v) if v.isdigit() else (_mode(rs) if rs and not lr.isdigit() else line_gbps)
+    if line_gbps and not lr.isdigit():
+        line_gbps = max(rail_rate.values())
+    data['ip_rail'], data['rail_rate'] = ip_rail, rail_rate
     line_speed = f'{line_gbps * 1000}Mb/s'
 
     # iperf3 results — with iteration/phase markers
@@ -1731,7 +1759,7 @@ def parse_tar_archive(filepath):
                 data['nic_inventory']['unknown'] += 1
                 # still listed: a link-down NIC reports Unknown! too
                 data['nic_inventory']['unknown_list'].append({'host': host, 'nic': nic, 'ip': ip, 'speed': speed})
-            elif speed == line_speed:
+            elif speed == f"{data['rail_rate'].get(ip_rail.get(ip), line_gbps) * 1000}Mb/s":
                 data['nic_inventory']['at_line'] += 1
             else:
                 data['nic_inventory']['not_line'].append({'host': host, 'nic': nic, 'ip': ip, 'speed': speed})
@@ -1850,8 +1878,12 @@ def parse_tar_archive(filepath):
     def _tier(x):
         x = round(x, 1)
         return int(x) if x == int(x) else x
-    data['tiers'] = {'G': _tier(line_gbps * 0.875), 'F': _tier(line_gbps * ok / 100),
-                     'M': _tier(line_gbps * (ok + slow) / 200), 'S': _tier(line_gbps * slow / 100)}
+    def _tiers(l):
+        return {'G': _tier(l * 0.875), 'F': _tier(l * ok / 100), 'M': _tier(l * (ok + slow) / 200), 'S': _tier(l * slow / 100)}
+    data['tiers'] = _tiers(line_gbps)
+    data['rail_tiers'] = {r: _tiers(v) if v else data['tiers'] for r, v in data['rail_rate'].items()}
+    if data['rail_rate']['A'] == data['rail_rate']['B']:   # one rate (or an old tarball): exactly as before
+        data['rail_tiers'] = {r: data['tiers'] for r in ('A', 'B')}
     F = data['tiers']['F']
 
     # Build slow_ips from iperf results
@@ -1875,7 +1907,7 @@ def parse_tar_archive(filepath):
 
     for ip, speeds in ip_stats.items():
         avg = sum(speeds) / len(speeds)
-        if avg < F:
+        if avg < data['rail_tiers'].get(data['ip_rail'].get(ip), data['tiers'])['F']:
             entry = {'ip': ip, 'avg': round(avg, 1), 'samples': len(speeds), 'diag': {}}
             entry['diag']['host'] = ip_host.get(ip, '')
             if ip in nic_by_ip:

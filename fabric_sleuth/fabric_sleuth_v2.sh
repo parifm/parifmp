@@ -51,7 +51,8 @@ Optional (default)
   FS_MAX_TARGETS   refuse to expand FS_HOSTS beyond this (4096)
   FS_LABEL         name in the report and tarball (first tested hostname)
   FS_OUT_DIR       where the tarball goes (.)
-  FS_LINE_GBPS     link speed for OK/SLOW cut-offs (most common rail NIC speed)
+  FS_LINE_GBPS     link speed for OK/SLOW cut-offs, both rails (per rail: its most common
+                   NIC speed, the higher one on a tie)
   FS_OK_PCT        OK at or above this % of link speed (75)
   FS_SLOW_PCT      SLOW at or above this %, CRITICAL below (50)
   FS_BUSY_CHECK    command run on each host before any load; exit 0 = host is in
@@ -643,8 +644,11 @@ check_path() {
     if ! rail_ok $sk $sr; then echo "DOWN ${T_HOST[$sk]}: ${RSTATE[$sk,$sr]}" > "$PATHS/$key"; return; fi
     if ! rail_ok $dk $dr; then echo "DOWN ${T_HOST[$dk]}: ${RSTATE[$dk,$dr]}" > "$PATHS/$key"; return; fi
     local m1=${RMTU[$sk,$sr]:-1500} m2=${RMTU[$dk,$dr]:-1500}
-    # the larger MTU: a 1500/9000 pair must fail here, not pass at 1472 and run with retransmits
-    local size=$(( (m1 > m2 ? m1 : m2) - 28 ))
+    # same rail: the larger MTU, so a 1500/9000 pair fails here, not pass at 1472 and run with retransmits.
+    # Cross-rail (routed): the smaller of the two rails' MTUs (each rail at its highest host MTU, as its
+    # router side would be), so a 4220 RDMA rail to a 9000 rail passes but a 1500 host on a 9000 rail fails.
+    local r1=${RAIL_MTU[$sr]:-$m1} r2=${RAIL_MTU[$dr]:-$m2}
+    local size=$(( (sr == dr ? (m1 > m2 ? m1 : m2) : (r1 < r2 ? r1 : r2)) - 28 ))
     ( out=$(rbash "${T_TARGET[$sk]}" "${RIP[$sk,$sr]}" "${RIP[$dk,$dr]}" "${RNIC[$sk,$sr]}" $size <<<"$PATH_SCRIPT" 2>&1)
       echo "${out:-SSH no output}" | tail -n1 > "$PATHS/$key" ) &
 }
@@ -684,7 +688,7 @@ collect_counters() {  # script outfile: run a counter script on every tested hos
 
 # UDP loss placement, the same rule as the dashboard: per phase and receiving host,
 # unaccounted = lost - (that host's InErrors + backlog drops + rail-NIC rx drops), floored at 0.
-# Files: ipmap (ip host rail), nicmap (host_nic host), UDP results, host counters, NIC drops.
+# Files: ipmap (ip host rail), nicmap (host_nic host rail), UDP results, host counters, NIC drops.
 # -v t="iterN Ux" limits it to one phase. Prints: lost sent socket nic backlog unaccounted.
 UDP_ATTR_AWK='
 FNR == 1 { f++ }
@@ -850,6 +854,7 @@ main() {
               -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=5
               -o ServerAliveInterval=15 -l "$FS_SSH_USER")
     declare -gA T_TARGET T_HOST DISC RNIC RIP RMTU RSTATE STARTED REACH_ONLY DOWN_IP
+    declare -ga RAIL_MTU=()   # per rail: highest MTU among its usable hosts
     trap cleanup EXIT
     # explicit exits so the EXIT trap always runs on Ctrl-C or kill, whatever command was running
     trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP
@@ -1014,6 +1019,7 @@ main() {
     # one MTU per rail expected; name the odd hosts (their paths fail the no-fragment check)
     local rr
     for rr in 0 1; do
+        RAIL_MTU[$rr]=$(for k in "${ELIG[@]}"; do rail_ok $k $rr && echo "${RMTU[$k,$rr]:-1500}"; done | sort -n | tail -n1)
         local mt; mt=$(for k in "${ELIG[@]}"; do rail_ok $k $rr && echo "${RMTU[$k,$rr]:-?} ${T_HOST[$k]}"; done |
             awk '{if (!($1 in n)) d++; n[$1]++; h[$1] = h[$1] " " $2} END {if (d < 2) exit; for (m in n) if (n[m] > b) {b = n[m]; mm = m}
                  t = 0; for (m in n) if (n[m] == b) t++
@@ -1044,14 +1050,28 @@ main() {
     log "Diagnostics: $(wc -l < "$NIC_DIAG" | tr -d ' ') NIC, $(wc -l < "$LLDP_DATA" | tr -d ' ') LLDP, $(wc -l < "$DRV_DATA" | tr -d ' ') driver lines"
     lldp_rail_check "$LLDP_DATA"
 
-    local LINE_GBPS=$FS_LINE_GBPS
-    if [[ -z $LINE_GBPS ]]; then
-        LINE_GBPS=$(awk '$4 ~ /^[0-9]+Mb\/s$/ {sub(/Mb\/s/,"",$4); n[$4/1000]++} END {for (s in n) if (n[s] > b) {b = n[s]; m = s} print m}' "$NIC_DIAG")
+    # line rate per rail (rails can differ, e.g. 100G RDMA + 50G); a rail with no speed takes the other's
+    local LINE_A=$FS_LINE_GBPS LINE_B=$FS_LINE_GBPS LINE_GBPS k
+    for k in "${ELIG[@]}"; do echo "${RIP[$k,0]} A"; echo "${RIP[$k,1]} B"; done > "$WORK/iprail"
+    if [[ -z $FS_LINE_GBPS ]]; then
+        read -r LINE_A LINE_B <<<"$(awk 'NR == FNR {rail[$1] = $2; next}
+            ($3 in rail) && $4 ~ /^[0-9]+Mb\/s$/ {s = $4; sub(/Mb\/s/, "", s); n[rail[$3] " " s / 1000]++}
+            END {for (k in n) {split(k, p, " "); r = p[1]; v = p[2] + 0
+                     if (n[k] > c[r] || (n[k] == c[r] && v > m[r])) {c[r] = n[k]; m[r] = v}}
+                 a = ("A" in m) ? m["A"] : m["B"]; b = ("B" in m) ? m["B"] : a; print a, b}' "$WORK/iprail" "$NIC_DIAG")"
     fi
+    LINE_GBPS=$(( ${LINE_A:-0} > ${LINE_B:-0} ? ${LINE_A:-0} : ${LINE_B:-0} )); (( LINE_GBPS )) || LINE_GBPS=
     if [[ -n $LINE_GBPS ]]; then
-        log "Link speed for cut-offs: ${LINE_GBPS}G ($(awk -v l="$LINE_GBPS" -v o="$FS_OK_PCT" -v s="$FS_SLOW_PCT" 'BEGIN {printf "OK >= %gG, SLOW >= %gG", l * o / 100, l * s / 100}'))"
-        awk -v want="$(( LINE_GBPS * 1000 ))Mb/s" '$4 ~ /^[0-9]+Mb\/s$/ && $4 != want {printf "#   %s %s %s\n", $1, $2, $4}' "$NIC_DIAG" > "$WORK/offspeed"
-        [[ -s $WORK/offspeed ]] && { log "NICs not at ${LINE_GBPS}G:"; cat "$WORK/offspeed" >&2; }
+        cutoffs() { awk -v l="$1" -v o="$FS_OK_PCT" -v s="$FS_SLOW_PCT" 'BEGIN {printf "%gG (OK >= %gG, SLOW >= %gG)", l, l * o / 100, l * s / 100}'; }
+        if [[ $LINE_A == "$LINE_B" ]]; then log "Link speed for cut-offs: $(cutoffs "$LINE_A")"
+        else log "Link speed for cut-offs: rail A $(cutoffs "$LINE_A"), rail B $(cutoffs "$LINE_B")"; fi
+        awk -v a="$(( LINE_A * 1000 ))Mb/s" -v b="$(( LINE_B * 1000 ))Mb/s" 'NR == FNR {rail[$1] = $2; next}
+            $4 ~ /^[0-9]+Mb\/s$/ && ($3 in rail) && $4 != (rail[$3] == "A" ? a : b) {printf "#   %s %s %s (rail %s)\n", $1, $2, $4, rail[$3]}' \
+            "$WORK/iprail" "$NIC_DIAG" > "$WORK/offspeed"
+        if [[ -s $WORK/offspeed ]]; then
+            if [[ $LINE_A == "$LINE_B" ]]; then log "NICs not at ${LINE_A}G:"; else log "NICs not at their rail's speed:"; fi
+            cat "$WORK/offspeed" >&2
+        fi
     else
         log "WARNING: no link speed from ethtool and FS_LINE_GBPS unset; no OK/SLOW status"
     fi
@@ -1110,7 +1130,7 @@ main() {
         [[ ${RIP[$k,1]} != none ]] && echo "${RIP[$k,1]} ${T_HOST[$k]} B"
     done > "$WORK/ipmap"
     for k in "${ELIG[@]}"; do for r in 0 1; do
-        [[ ${RNIC[$k,$r]} != - ]] && echo "${T_HOST[$k]}_${RNIC[$k,$r]} ${T_HOST[$k]}"
+        [[ ${RNIC[$k,$r]} != - ]] && echo "${T_HOST[$k]}_${RNIC[$k,$r]} ${T_HOST[$k]} $( (( r )) && echo B || echo A)"
     done; done > "$WORK/nicmap"
     UDP_RESULTS=$COLLECT_DIR/iperf3_udp_results.txt
     if [[ $FS_UDP == 1 ]]; then
@@ -1165,11 +1185,16 @@ main() {
             "$WORK/prio_pre" "$WORK/prio_post" > "$WORK/prio_delta"
         if [[ -s $WORK/prio_delta ]]; then
             cat "$WORK/prio_delta" >> "$COLLECT_DIR/prio_counters.txt"
-            # which priority carried the bytes (shows where the DSCP mapped)
-            log "Traffic by priority in iteration $ITER (rx+tx bytes, all rail NICs): $(awk '
+            # which priority carried the bytes, per rail (shows where each rail's DSCP map put the traffic)
+            log "Traffic by priority in iteration $ITER (rx+tx bytes): $(awk '
+                NR == FNR { rail[$1] = $3; next }
                 { l = tolower($3) } l ~ /byte/ && match(l, /pri(ority|o)?_?[0-9]/) {
-                    p = substr(l, RSTART, RLENGTH); gsub(/[^0-9]/, "", p); b[p] += $4; n++ }
-                END { for (p in b) printf "prio%s %.1fGB  ", p, b[p] / 1e9; if (!n) printf "no per-priority byte counters" }' "$WORK/prio_delta")"
+                    p = substr(l, RSTART, RLENGTH); gsub(/[^0-9]/, "", p); r = ($2 in rail) ? rail[$2] : "?"
+                    b[r " " p] += $4; n++ }
+                END { for (r = 1; r <= 3; r++) { R = substr("AB?", r, 1); t = ""
+                          for (p = 0; p <= 7; p++) if ((R " " p) in b) t = t sprintf(" prio%d %.1fGB", p, b[R " " p] / 1e9)
+                          if (t != "") printf "rail %s:%s  ", R, t }
+                      if (!n) printf "no per-priority byte counters" }' "$WORK/nicmap" "$WORK/prio_delta")"
             awk 'tolower($3) !~ /byte|packet/ || $3 ~ /^rdma:/' "$WORK/prio_delta" | sort -k4 -rn > "$WORK/prio_events"
             if [[ -s $WORK/prio_events ]]; then
                 log "Pause/ECN/discard/RDMA counters that rose (top 10 of $(wc -l < "$WORK/prio_events" | tr -d ' ')):"
@@ -1201,7 +1226,8 @@ main() {
         local map=$WORK/ipmap
         if grep -q 'Gbits/sec' "$RESULTS"; then
             echo "Per-host throughput, worst first (Gbps; each rail averaged over all its runs):"
-            grep 'Gbits/sec' "$RESULTS" | awk -F'[, ]+' -v ok="$(( ${LINE_GBPS:-0} * FS_OK_PCT ))" -v slow="$(( ${LINE_GBPS:-0} * FS_SLOW_PCT ))" '
+            # status from each rail's average as a share of that rail's line rate, averaged over the host's rails
+            grep 'Gbits/sec' "$RESULTS" | awk -F'[, ]+' -v la="${LINE_A:-0}" -v lb="${LINE_B:-0}" -v ok="$FS_OK_PCT" -v slow="$FS_SLOW_PCT" '
                 NR==FNR { host[$1]=$2; rail[$1]=$3; next }
                 { for (i = 1; i <= NF; i++) if ($i == "Gbits/sec") { s = $(i-1) + 0; break }
                   for (j = 1; j <= 2; j++) { ip = $j; sum[host[ip], rail[ip]] += s; cnt[host[ip], rail[ip]]++; seen[host[ip]] = 1 } }
@@ -1209,9 +1235,9 @@ main() {
                     print "Host Avg_Gbps Rail_A Rail_B Status"
                     for (h in seen) {
                         a = cnt[h,"A"] ? sum[h,"A"]/cnt[h,"A"] : -1; b = cnt[h,"B"] ? sum[h,"B"]/cnt[h,"B"] : -1
-                        t = 0; m = 0; if (a >= 0) {t += a; m++} if (b >= 0) {t += b; m++}
-                        avg = t / m
-                        st = ok == 0 ? "-" : (avg * 100 >= ok ? "OK" : (avg * 100 >= slow ? "SLOW" : "CRITICAL"))
+                        t = 0; m = 0; f = 0; if (a >= 0) {t += a; m++; f += la ? a / la : 0} if (b >= 0) {t += b; m++; f += lb ? b / lb : 0}
+                        avg = t / m; f = f / m
+                        st = (la == 0 || lb == 0) ? "-" : (f * 100 >= ok ? "OK" : (f * 100 >= slow ? "SLOW" : "CRITICAL"))
                         if (m < 2) st = st "(1rail)"
                         printf "%s %.1f %s %s %s\n", h, avg, (a < 0 ? "-" : sprintf("%.1f", a)), (b < 0 ? "-" : sprintf("%.1f", b)), st
                     }
@@ -1273,6 +1299,8 @@ main() {
         echo "rail_a=${RAIL_SPEC[0]// /,}"
         echo "rail_b=${RAIL_SPEC[1]// /,}"
         echo "line_rate_gbps=${LINE_GBPS:-unknown}"
+        echo "line_rate_a_gbps=${LINE_A:-unknown}"
+        echo "line_rate_b_gbps=${LINE_B:-unknown}"
         echo "ok_pct=$FS_OK_PCT"
         echo "slow_pct=$FS_SLOW_PCT"
         echo "busy_hosts=${#BUSY[@]}"
