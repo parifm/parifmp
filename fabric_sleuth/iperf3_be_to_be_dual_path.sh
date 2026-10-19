@@ -532,7 +532,7 @@ cleanup() {
     done
     wait
     if [[ -z $DONE ]]; then
-        if [[ -n $LOADED ]]; then log "Run did not finish; partial data left in $COLLECT_DIR"
+        if [[ -n $LOADED ]]; then { [[ -f $FS_RUNLOG ]] && cp "$FS_RUNLOG" "$COLLECT_DIR/run.log"; log "Run did not finish; partial data left in $COLLECT_DIR"; }
         else rm -rf "${COLLECT_DIR:?}"; fi
     fi
     rm -rf "${SOCKET_DIR:?}" "${WORK:?}"
@@ -575,8 +575,6 @@ main() {
     COLLECT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/dp_validation_XXXXXX")
     RAW_DIR=$COLLECT_DIR/raw_per_host; mkdir -p "$RAW_DIR" "$WORK/disc" "$WORK/sweep"
     RUNLOG_SSH=$COLLECT_DIR/ssh_errors.log
-    exec 2> >(tee -a "$COLLECT_DIR/run.log" >&2)
-    : &  # bash 5.1+: a bare `wait` blocks on the tee above while it is still $!
 
     SUDO=""; [[ $FS_SSH_USER == root ]] || SUDO="sudo -n"
     SSH_OPTS=(-o ControlMaster=auto -o ControlPersist=15m -o "ControlPath=$SOCKET_DIR/%C"
@@ -957,6 +955,7 @@ main() {
     local tarball=$FS_OUT_DIR/fabric_sleuth_${LABEL}_${ts}.tar.gz
     stop_servers
     DONE=1
+    [[ -n $FS_RUNLOG && -f $FS_RUNLOG ]] && cp "$FS_RUNLOG" "$COLLECT_DIR/run.log"
     COPYFILE_DISABLE=1 tar czf "$tarball" -C "$(dirname "$COLLECT_DIR")" "$(basename "$COLLECT_DIR")" || die "tar failed; data left in $COLLECT_DIR"
     log "Data archive: $tarball ($(du -h "$tarball" | cut -f1))"
     log "Dashboard:    python3 generate_dashboard.py $tarball"
@@ -964,5 +963,13 @@ main() {
 }
 
 START_TS=$(date -u +%Y%m%dT%H%M%SZ)
-# run when executed or fed on stdin (ssh jump 'bash -s' < script: BASH_SOURCE is empty); not when sourced
-if [[ ${#BASH_SOURCE[@]} -eq 0 || ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; fi
+# Run when executed or fed on stdin (ssh jump 'bash -s' < script: BASH_SOURCE is empty); not when sourced.
+# stderr is copied to the run log by tee in a pipeline, not a process substitution: bash 5.1's
+# bare `wait` also waits for a process substitution, which never exits while main runs.
+# tee ignores SIGINT so an interrupted run's cleanup can still write.
+if [[ ${#BASH_SOURCE[@]} -eq 0 || ${BASH_SOURCE[0]} == "$0" ]]; then
+    FS_RUNLOG=$(mktemp "${TMPDIR:-/tmp}/fs_runlog.XXXXXX") || exit 2
+    { main "$@" 2>&1 1>&3 3>&- | ( trap '' INT; exec tee -a "$FS_RUNLOG" >&2 3>&- ); rc=${PIPESTATUS[0]}; } 3>&1
+    rm -f "$FS_RUNLOG"
+    exit "$rc"
+fi
