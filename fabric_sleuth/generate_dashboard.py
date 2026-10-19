@@ -1660,6 +1660,8 @@ def parse_tar_archive(filepath):
 
     if not line_gbps:
         line_gbps = int(max((r['gbps'] for r in data['iperf_results']), default=100))
+        if line_gbps < 1:   # every run at 0 Gbps (or no runs): no rate to scale against
+            line_gbps, data['line_rate_src'] = 1, 'unknown: no NIC speed and no run above 0 Gbps; 1G used for scale'
     ok = int(data['metadata'].get('ok_pct', 75))
     slow = int(data['metadata'].get('slow_pct', 50))
     data['line_rate'] = line_gbps
