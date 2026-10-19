@@ -599,7 +599,7 @@ main() {
     fi
     if [[ -n $LINE_GBPS ]]; then
         log "Link speed for cut-offs: ${LINE_GBPS}G (OK >= $(( LINE_GBPS * FS_OK_PCT / 100 ))G, SLOW >= $(( LINE_GBPS * FS_SLOW_PCT / 100 ))G)"
-        awk -v want="$(( LINE_GBPS * 1000 ))Mb/s" '$4 != want {printf "#   %s %s %s\n", $1, $2, $4}' "$NIC_DIAG" > "$WORK/offspeed"
+        awk -v want="$(( LINE_GBPS * 1000 ))Mb/s" '$4 ~ /^[0-9]+Mb\/s$/ && $4 != want {printf "#   %s %s %s\n", $1, $2, $4}' "$NIC_DIAG" > "$WORK/offspeed"
         [[ -s $WORK/offspeed ]] && { log "NICs not at ${LINE_GBPS}G:"; cat "$WORK/offspeed" >&2; }
     else
         log "WARNING: no link speed from ethtool and FS_LINE_GBPS unset; no OK/SLOW status"
@@ -711,7 +711,7 @@ main() {
                         avg = t / m
                         st = ok == 0 ? "-" : (avg * 100 >= ok ? "OK" : (avg * 100 >= slow ? "SLOW" : "CRITICAL"))
                         if (m < 2) st = st "(1rail)"
-                        printf "%s %.0f %s %s %s\n", h, avg, (a < 0 ? "-" : sprintf("%.0f", a)), (b < 0 ? "-" : sprintf("%.0f", b)), st
+                        printf "%s %.1f %s %s %s\n", h, avg, (a < 0 ? "-" : sprintf("%.1f", a)), (b < 0 ? "-" : sprintf("%.1f", b)), st
                     }
                 }' "$map" - | { read -r hdr; echo "$hdr"; sort -k2 -n; } | column -t | sed 's/^/  /'
         else

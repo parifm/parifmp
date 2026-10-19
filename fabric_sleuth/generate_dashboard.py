@@ -354,12 +354,12 @@ td.dt-row-num {{ color: #556; font-size: 0.8em; text-align: right; width: 30px; 
     <div class="row g-3">
         <div class="col-md-4">
             <div class="card"><div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">NIC Inventory<button class="btn btn-sm btn-outline-info" onclick="downloadTableCsv('not400Table','nic_not400g.csv')">Download CSV</button></div><div class="card-body">
-                <p>Total NICs: <strong>{data['nic_inventory']['total']}</strong> | At {L}G: <strong class="text-success">{data['nic_inventory']['at_line']}</strong> | Not {L}G: <strong class="text-danger">{data['nic_inventory']['total'] - data['nic_inventory']['at_line']}</strong></p>
-                <h6 class="text-danger mt-3">Down / Not-{L}G NICs</h6>
+                <p>Total NICs: <strong>{data['nic_inventory']['total']}</strong> | At {L}G: <strong class="text-success">{data['nic_inventory']['at_line']}</strong> | Not {L}G: <strong class="text-danger">{len(data['nic_inventory']['not_line'])}</strong> | Speed unknown: <strong>{data['nic_inventory']['unknown']}</strong></p>
+                <h6 class="text-danger mt-3">Down / Not-{L}G / speed-unknown NICs</h6>
                 <table class="table table-sm table-striped" id="not400Table">
                 <thead><tr><th>Host</th><th>NIC</th><th>IP</th><th>Speed<small>expected {L}G</small></th></tr></thead>
                 <tbody>
-                {''.join(f"<tr><td>{n['host']}</td><td>{n['nic']}</td><td>{n['ip']}</td><td><span class='badge badge-down'>{n['speed']}</span></td></tr>" for n in data['nic_inventory']['not_line'])}
+                {''.join(f"<tr><td>{n['host']}</td><td>{n['nic']}</td><td>{n['ip']}</td><td><span class='badge badge-down'>{n['speed']}</span></td></tr>" for n in data['nic_inventory']['not_line'] + data['nic_inventory']['unknown_list'])}
                 </tbody></table>
             </div></div>
         </div>
@@ -551,9 +551,9 @@ td.dt-row-num {{ color: #556; font-size: 0.8em; text-align: right; width: 30px; 
                     <table style="width:100%; font-size:0.78rem; color:#ccc;">
                         <tr style="color:#8899aa;"><th></th><th style="text-align:right;">Hosts</th><th style="text-align:right;">Links</th></tr>
                         <tr><td><span style="color:#4ecca3;">&bull;</span> Healthy (&ge;{G}G)</td><td style="text-align:right;" id="legH350">0</td><td style="text-align:right;" id="legL350">0</td></tr>
-                        <tr><td><span style="color:#0dcaf0;">&bull;</span> Functional ({F}-{G-1}G)</td><td style="text-align:right;" id="legH300">0</td><td style="text-align:right;" id="legL300">0</td></tr>
-                        <tr><td><span style="color:#ffc107;">&bull;</span> {M}-{F-1}G</td><td style="text-align:right;" id="legH250">0</td><td style="text-align:right;" id="legL250">0</td></tr>
-                        <tr><td><span style="color:#ffc107;">&bull;</span> {S}-{M-1}G</td><td style="text-align:right;" id="legH200">0</td><td style="text-align:right;" id="legL200">0</td></tr>
+                        <tr><td><span style="color:#0dcaf0;">&bull;</span> Functional ({F}-{G}G)</td><td style="text-align:right;" id="legH300">0</td><td style="text-align:right;" id="legL300">0</td></tr>
+                        <tr><td><span style="color:#ffc107;">&bull;</span> {M}-{F}G</td><td style="text-align:right;" id="legH250">0</td><td style="text-align:right;" id="legL250">0</td></tr>
+                        <tr><td><span style="color:#ffc107;">&bull;</span> {S}-{M}G</td><td style="text-align:right;" id="legH200">0</td><td style="text-align:right;" id="legL200">0</td></tr>
                         <tr><td><span style="color:#e94560;">&bull;</span> &lt;{S}G</td><td style="text-align:right;" id="legHLow">0</td><td style="text-align:right;" id="legLLow">0</td></tr>
                         <tr><td><span style="color:#666;">&bull;</span> Down</td><td style="text-align:right;" id="legHDown">0</td><td style="text-align:right;" id="legLDown">0</td></tr>
                     </table>
@@ -1372,7 +1372,7 @@ def parse_tar_archive(filepath):
         'down_ips': [],
         'ping_failures': [],
         'iperf_results': [],
-        'nic_inventory': {'total': 0, 'at_line': 0, 'not_line': []},
+        'nic_inventory': {'total': 0, 'at_line': 0, 'not_line': [], 'unknown': 0, 'unknown_list': []},
         'fec_top': [],
         'slow_ips': [],
         'driver_info': [],
@@ -1472,11 +1472,16 @@ def parse_tar_archive(filepath):
             host, nic, ip, speed = parts[0], parts[1], parts[2], parts[3]
             # 'n/a' = this driver has no such counter (not zero)
             corr, l0, l1, l2, l3, ld, sym = (_int(p) for p in parts[4:11])
-            if speed != line_speed and speed != 'unknown':
-                data['nic_inventory']['not_line'].append({'host': host, 'nic': nic, 'ip': ip, 'speed': speed})
+            # ethtool prints "Unknown!" on virtio and similar: no speed, not an off-speed NIC
             data['nic_inventory']['total'] += 1
-            if speed == line_speed:
+            if not re.match(r'^\d+Mb/s$', speed):
+                data['nic_inventory']['unknown'] += 1
+                # still listed: a link-down NIC reports Unknown! too
+                data['nic_inventory']['unknown_list'].append({'host': host, 'nic': nic, 'ip': ip, 'speed': speed})
+            elif speed == line_speed:
                 data['nic_inventory']['at_line'] += 1
+            else:
+                data['nic_inventory']['not_line'].append({'host': host, 'nic': nic, 'ip': ip, 'speed': speed})
             if corr:
                 data['fec_top'].append({
                     'host': host, 'nic': nic, 'ip': ip, 'corrected': corr,
@@ -1586,8 +1591,12 @@ def parse_tar_archive(filepath):
     slow = int(data['metadata'].get('slow_pct', 50))
     data['line_rate'] = line_gbps
     # healthy / functional / mid / slow cut-offs; 350/300/250/200 at 400G
-    data['tiers'] = {'G': round(line_gbps * 0.875), 'F': round(line_gbps * ok / 100),
-                     'M': round(line_gbps * (ok + slow) / 200), 'S': round(line_gbps * slow / 100)}
+    # one decimal so low rates keep distinct bands (2.6/2.2/1.9/1.5 at 3G); whole values print bare
+    def _tier(x):
+        x = round(x, 1)
+        return int(x) if x == int(x) else x
+    data['tiers'] = {'G': _tier(line_gbps * 0.875), 'F': _tier(line_gbps * ok / 100),
+                     'M': _tier(line_gbps * (ok + slow) / 200), 'S': _tier(line_gbps * slow / 100)}
     F = data['tiers']['F']
 
     # Build slow_ips from iperf results
