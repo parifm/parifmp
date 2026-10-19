@@ -26,8 +26,11 @@ Required
 
 Optional (default)
   FS_DURATION      iperf3 seconds per run (120; $1 also sets it)
-  FS_ITER          iterations, pairs reshuffled after the first (5)
+  FS_ITER          iterations, round-robin pairing: no pair repeats, every host pair
+                   is tested after n-1 iterations (n if n is odd) (5)
   FS_STREAMS       iperf3 parallel streams, >=2 (16)
+  FS_TOS           IP TOS byte for the test traffic, 0-255 (iperf3 -S), e.g. 106 = DSCP 26
+                   + ECT(0); TCP keeps the DSCP, the kernel sets the ECN bits (unset: 0)
   FS_PORT          iperf3 port (5201)
   FS_SSH_USER      ssh user; non-root runs remote steps with sudo -n (root)
   FS_SSH_PARALLEL  ssh sessions at once for sweep and collection (64)
@@ -270,6 +273,18 @@ for nic in "$@"; do
 done
 EOF
 
+# Per-priority, PFC/pause and ECN/CNP counters for the rail NICs ($@): "host_nic counter value".
+# Names differ by driver (mlx5 rx_prio3_pause, ice rx_priority_3_xon.nic, bnxt pfc_*); per-queue lines skipped.
+read -r -d '' PRIO_SCRIPT <<'EOF'
+h=$(hostname -s)
+for nic in "$@"; do
+    [ "$nic" = - ] && continue
+    ethtool -S "$nic" 2>&1 | awk -v k="${h}_${nic}" '$2 ~ /^[0-9]+$/ && $1 ~ /:$/ {
+        n = $1; sub(/:$/, "", n); l = tolower(n)
+        if (l ~ /prio|pri[0-9]|pfc|pause|xon|xoff|ecn|cnp/ && l !~ /ch[0-9]|_q[0-9]|queue/) print k, n, $2 }'
+done
+EOF
+
 # Path check: src_ip dst_ip src_nic df_size -> OK or a reason
 read -r -d '' PATH_SCRIPT <<'EOF'
 r=$(ip -o route get "$2" from "$1" 2>&1); r=${r%%$'\n'*}
@@ -287,9 +302,9 @@ for i in $(seq 20); do [ -z "$(pgrep -x iperf3)" ] && break; sleep 0.5; done
 for ip in "$@"; do iperf3 -s -D -B "$ip" -p "$port"; done
 EOF
 
-# One iperf3 run: src dst port streams secs -> "[SUM] ... receiver retransmits:N" or "ERROR ..."
+# One iperf3 run: src dst port streams secs [tos] -> "[SUM] ... receiver retransmits:N" or "ERROR ..."
 read -r -d '' IPERF_SCRIPT <<'EOF'
-out=$(iperf3 --connect-timeout 5000 -c "$2" -B "$1" -p "$3" -P "$4" -t "$5" -f g -Z 2>&1); rc=$?
+out=$(iperf3 --connect-timeout 5000 -c "$2" -B "$1" -p "$3" -P "$4" -t "$5" -f g -Z ${6:+-S $6} 2>&1); rc=$?
 retr=$(echo "$out" | awk '/SUM.*sender/{print $(NF-1)}')
 rcv=$(echo "$out" | grep -m1 'SUM.*receiver')
 if [ -n "$rcv" ]; then echo "$rcv retransmits:${retr:-0}"
@@ -335,10 +350,19 @@ rail_lookup() {
 
 rail_ok() { [[ ${RSTATE[$1,$2]} == ok ]]; }
 
-shuffle_order() {  # Fisher-Yates on ORDER with $RANDOM
-    local i j t
-    for (( i = ${#ORDER[@]} - 1; i > 0; i-- )); do
-        j=$(( RANDOM % (i + 1) )); t=${ORDER[i]}; ORDER[i]=${ORDER[j]}; ORDER[j]=$t
+# round_pairs r: round r of the circle method over ROT (even length, "-" = bye).
+# ROT[0] stays put and the rest rotate one place per round, so no pair repeats
+# until every pair has met (${#ROT[@]} - 1 rounds). Sets PC/PS (client/server) and SITOUT.
+round_pairs() {
+    local r=$1 m=${#ROT[@]} i a b
+    local -a arr=("${ROT[0]}")
+    for (( i = 0; i < m - 1; i++ )); do arr+=("${ROT[1 + (i + r) % (m - 1)]}"); done
+    PC=(); PS=(); SITOUT=""
+    for (( i = 0; i < m / 2; i++ )); do
+        a=${arr[i]}; b=${arr[m - 1 - i]}
+        if [[ $a == - ]]; then SITOUT=$b
+        elif [[ $b == - ]]; then SITOUT=$a
+        else PC+=("$a"); PS+=("$b"); fi
     done
 }
 
@@ -363,9 +387,18 @@ run_path() {
         return
     fi
     ( out=$(timeout $(( FS_DURATION + 30 )) ssh "${SSH_OPTS[@]}" "${T_TARGET[$sk]}" $SUDO bash -s -- \
-              "${RIP[$sk,$sr]}" "${RIP[$dk,$dr]}" "$FS_PORT" "$FS_STREAMS" "$FS_DURATION" <<<"$IPERF_SCRIPT" 2>&1)
+              "${RIP[$sk,$sr]}" "${RIP[$dk,$dr]}" "$FS_PORT" "$FS_STREAMS" "$FS_DURATION" "$FS_TOS" <<<"$IPERF_SCRIPT" 2>&1)
       [[ -n $out ]] || out="ERROR timeout or ssh failure"
       echo "${RIP[$sk,$sr]},${RIP[$dk,$dr]},${out%%$'\n'*}" >> "$PHASE_OUT" ) &
+}
+
+collect_counters() {  # script outfile: run a counter script on every tested host
+    local script=$1 outfile=$2 k
+    : > "$outfile"
+    for k in "${ELIG[@]}"; do
+        rbash "${T_TARGET[$k]}" "${RNIC[$k,0]}" "${RNIC[$k,1]}" <<<"$script" >> "$outfile" 2>> "$RUNLOG_SSH" &
+    done
+    wait
 }
 
 collect_drops() {
@@ -434,6 +467,8 @@ main() {
     done
     (( FS_STREAMS >= 2 )) || die "FS_STREAMS must be >= 2 (iperf3 prints no [SUM] line for one stream)"
     [[ -z $FS_LINE_GBPS || $FS_LINE_GBPS =~ ^[0-9]+$ ]] || die "FS_LINE_GBPS must be an integer"
+    [[ -z $FS_TOS || ( $FS_TOS =~ ^[0-9]{1,3}$ && 10#$FS_TOS -le 255 ) ]] || die "FS_TOS must be 0-255 (decimal), got '$FS_TOS'"
+    [[ -n $FS_TOS ]] && FS_TOS=$(( 10#$FS_TOS ))
 
     expand_targets "$FS_HOSTS"
     if [[ $1 == --list ]]; then printf '%s\n' "${TARGETS[@]}"; log "${#TARGETS[@]} targets"; exit 0; fi
@@ -642,29 +677,39 @@ main() {
     : > "$RESULTS"; : > "$DROP_TOTALS"; : > "$PATH_EXCL"
     ORDER=($(for k in "${ELIG[@]}"; do echo "$k ${T_HOST[$k]}"; done | sort -V -k2 | awk '{print $1}'))
     local FIRST_HOST=${T_HOST[${ORDER[0]}]}
-    local n=${#ORDER[@]} half=$(( ${#ORDER[@]} / 2 )) p ck sk
+    local n=${#ORDER[@]} p ck sk
+    ROT=("${ORDER[@]}"); (( n % 2 )) && ROT+=(-)
+    local rounds=$(( ${#ROT[@]} - 1 )) per=$(( n / 2 )) total=$(( n * (n - 1) / 2 ))
+    local used=$(( FS_ITER < rounds ? FS_ITER : rounds ))
+    PAIRS_COVERED=$(( used * per )); PAIRS_TOTAL=$total
+    log "Pairing: round-robin, $per pairs per iteration; $FS_ITER iterations cover $PAIRS_COVERED of $total host pairs$( (( FS_ITER < rounds )) && echo " (all pairs need FS_ITER=$rounds)")"
+    (( FS_ITER > rounds )) && log "Iterations past $rounds repeat the pairings from the start"
+    [[ -n $FS_TOS ]] && log "Marking: iperf3 -S $FS_TOS = DSCP $(( FS_TOS >> 2 )), ECN bits $(( FS_TOS & 3 )) (TCP: the kernel owns the ECN bits)"
+    : > "$COLLECT_DIR/pairs.txt"; : > "$COLLECT_DIR/prio_counters.txt"
     for (( ITER = 1; ITER <= FS_ITER; ITER++ )); do
-        (( ITER > 1 )) && shuffle_order
-        log "============ Iteration $ITER of $FS_ITER ($half pairs) ============"
-        (( n % 2 )) && log "Sits out this iteration (odd host count): ${T_HOST[${ORDER[n-1]}]}"
+        round_pairs $(( (ITER - 1) % rounds ))
+        log "============ Iteration $ITER of $FS_ITER (${#PC[@]} pairs) ============"
+        [[ -n $SITOUT ]] && log "Sits out this iteration (odd host count): ${T_HOST[$SITOUT]}"
+        for (( p = 0; p < ${#PC[@]}; p++ )); do echo "$ITER ${T_HOST[${PC[p]}]} ${T_HOST[${PS[p]}]}"; done >> "$COLLECT_DIR/pairs.txt"
         PATHS=$WORK/paths.$ITER; mkdir -p "$PATHS"
-        for (( p = 0; p < half; p++ )); do
-            ck=${ORDER[p]}; sk=${ORDER[p + half]}
+        for (( p = 0; p < ${#PC[@]}; p++ )); do
+            ck=${PC[p]}; sk=${PS[p]}
             check_path p1a_$p $ck 0 $sk 0; check_path p1b_$p $sk 1 $ck 1
             check_path p2a_$p $ck 0 $sk 1; check_path p2b_$p $sk 0 $ck 1
         done
         wait
         local bad; bad=$(grep -Lx OK "$PATHS"/* | wc -l | tr -d ' ')
-        log "Path checks (egress route, ping, MTU no-fragment): $(( half * 4 - bad )) OK, $bad excluded"
+        log "Path checks (egress route, ping, MTU no-fragment): $(( ${#PC[@]} * 4 - bad )) OK, $bad excluded"
 
         local DROPS_PRE=$WORK/drops_pre DROPS_POST=$WORK/drops_post
         collect_drops "$DROPS_PRE"
+        collect_counters "$PRIO_SCRIPT" "$WORK/prio_pre"
         for PHASE in 1 2; do
             PHASE_OUT=$WORK/phase.$ITER.$PHASE; : > "$PHASE_OUT"
             [[ $PHASE == 1 ]] && log "Phase 1: A->A and B->B at once" || log "Phase 2: A->B both directions at once"
             echo "### iteration:${ITER} phase:${PHASE}" >> "$RESULTS"
-            for (( p = 0; p < half; p++ )); do
-                ck=${ORDER[p]}; sk=${ORDER[p + half]}
+            for (( p = 0; p < ${#PC[@]}; p++ )); do
+                ck=${PC[p]}; sk=${PS[p]}
                 if [[ $PHASE == 1 ]]; then run_path p1a_$p $ck 0 $sk 0; run_path p1b_$p $sk 1 $ck 1
                 else run_path p2a_$p $ck 0 $sk 1; run_path p2b_$p $sk 0 $ck 1; fi
             done
@@ -674,6 +719,28 @@ main() {
             [[ $errs -gt 0 ]] && log "WARNING: $errs runs in phase $PHASE returned no result (lines with ERROR above)"
         done
         collect_drops "$DROPS_POST"
+        collect_counters "$PRIO_SCRIPT" "$WORK/prio_post"
+        # per-priority / pause / ECN counter increases: "iterN host_nic counter delta"
+        awk -v it="iter$ITER" 'NR==FNR {pre[$1" "$2]=$3; next}
+            ($1" "$2) in pre && $3 > pre[$1" "$2] {print it, $1, $2, $3 - pre[$1" "$2]}' \
+            "$WORK/prio_pre" "$WORK/prio_post" > "$WORK/prio_delta"
+        if [[ -s $WORK/prio_delta ]]; then
+            cat "$WORK/prio_delta" >> "$COLLECT_DIR/prio_counters.txt"
+            # which priority carried the bytes (shows where the DSCP mapped)
+            log "Traffic by priority in iteration $ITER (rx+tx bytes, all rail NICs): $(awk '
+                { l = tolower($3) } l ~ /byte/ && match(l, /pri(ority|o)?_?[0-9]/) {
+                    p = substr(l, RSTART, RLENGTH); gsub(/[^0-9]/, "", p); b[p] += $4; n++ }
+                END { for (p in b) printf "prio%s %.1fGB  ", p, b[p] / 1e9; if (!n) printf "no per-priority byte counters" }' "$WORK/prio_delta")"
+            awk 'tolower($3) !~ /byte|packet/' "$WORK/prio_delta" | sort -k4 -rn > "$WORK/prio_events"
+            if [[ -s $WORK/prio_events ]]; then
+                log "Pause/ECN/discard counters that rose (top 10 of $(wc -l < "$WORK/prio_events" | tr -d ' ')):"
+                head -n 10 "$WORK/prio_events" | column -t | sed 's/^/#   /' >&2
+            else
+                log "No pause/ECN/discard counter rose in iteration $ITER"
+            fi
+        else
+            log "No priority/pause/ECN counter rose in iteration $ITER ($(wc -l < "$WORK/prio_post" | tr -d ' ') counters read)"
+        fi
         local iter_drops; iter_drops=$(compute_drops "$DROPS_PRE" "$DROPS_POST" "iter${ITER}")
         if [[ -n $iter_drops ]]; then
             log "Drops during iteration $ITER:"; echo "$iter_drops" | column -t | sed 's/^/#   /' >&2
@@ -742,6 +809,10 @@ main() {
         echo "slow_pct=$FS_SLOW_PCT"
         echo "busy_hosts=${#BUSY[@]}"
         echo "port=$FS_PORT"
+        echo "tos=${FS_TOS:-none}"
+        echo "pairing=round-robin"
+        echo "pairs_covered=$PAIRS_COVERED"
+        echo "pairs_total=$PAIRS_TOTAL"
     } > "$COLLECT_DIR/metadata.txt"
     for k in "${ELIG[@]}"; do
         echo "${T_HOST[$k]} ${T_TARGET[$k]} ${RIP[$k,0]} ${RIP[$k,1]} ${RNIC[$k,0]} ${RNIC[$k,1]}"
