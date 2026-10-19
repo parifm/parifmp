@@ -239,6 +239,37 @@ def generate_html(data, output_path):
     needs_repair = total_ips - healthy_ips - functional_ips
 
     # Paths, rails and hosts the run could not test, with the reason
+    # UDP pass: loss placed per receiving host and phase; unaccounted = likely fabric
+    udp_html = ''
+    ok_rows = [u for u in data.get('udp', []) if 'error' not in u]
+    if data.get('udp'):
+        lost = sum(u['lost'] for u in ok_rows); sent = sum(u['sent'] for u in ok_rows)
+        sock = sum(u['sock'] for u in ok_rows); nic = sum(u['nic'] for u in ok_rows)
+        back = sum(u['back'] for u in ok_rows); unacc = sum(u['unacc'] for u in ok_rows)
+        errs = len(data['udp']) - len(ok_rows)
+        avg = sum(u['gbps'] for u in ok_rows) / len(ok_rows) if ok_rows else 0
+        notes = []
+        old = [f"{v[0]} ({v[1]})" for v in data.get('iperf3_versions', [])
+               if len(v) > 1 and re.match(r'^\d+\.\d+', v[1]) and tuple(int(x) for x in v[1].split('.')[:2]) < (3, 16)]
+        if old:
+            notes.append(f"iperf3 older than 3.16 (single-threaded; UDP ceiling is host CPU-bound): {', '.join(old)}")
+        small = [f"{v[0]} ({v[2]})" for v in data.get('iperf3_versions', []) if len(v) > 2 and v[2].isdigit() and int(v[2]) < 4194304]
+        if small:
+            notes.append(f"net.core.rmem_max under 4 MiB inflates receiver-socket loss: {', '.join(small)}")
+        rows = ''.join(
+            f"<tr><td>{escape(u['iter'])} {escape(u['phase'])}</td><td>{escape(u['src_host'])} {escape(u['src'])}</td>"
+            f"<td>{escape(u['dst_host'])} {escape(u['dst'])}</td><td>{u['gbps']:g}</td><td>{u['lost']:,}/{u['sent']:,}</td>"
+            f"<td>{100 * u['lost'] / u['sent'] if u['sent'] else 0:.3f}</td><td>{u['sock']:,}</td><td>{u['nic']:,}</td>"
+            f"<td>{u['back']:,}</td><td class=\"{'text-danger' if u['unacc'] else ''}\">{u['unacc']:,}</td></tr>"
+            for u in sorted(ok_rows, key=lambda u: (-u['unacc'], -u['lost'])))
+        udp_html = f"""<div class="card mb-3"><div class="card-header">UDP, no rate cap (iperf3 -u -b 0): avg {avg:.1f} Gbps per run |
+lost {lost:,} of {sent:,} datagrams ({100 * lost / sent if sent else 0:.3f}%): receiver socket {sock:,}, NIC {nic:,}, kernel backlog {back:,},
+<b class="{'stat-bad' if unacc else 'stat-good'}">unaccounted (likely fabric) {unacc:,}</b>{f' | {errs} runs with no result' if errs else ''}</div>
+<div class="card-body" style="max-height:360px; overflow-y:auto;">{''.join(f'<p class="text-warning mb-1">{escape(n)}</p>' for n in notes)}
+<p class="mb-1" style="font-size:0.8rem; color:#8899aa;">Host-side buckets are the receiving host's counters for that phase (not per flow); unaccounted = lost minus those, floored at 0.</p>
+<table class="table table-sm table-striped"><thead><tr><th>Run</th><th>From</th><th>To</th><th>Gbps</th><th>Lost/Sent</th><th>Loss %</th>
+<th>Rx socket</th><th>NIC</th><th>Backlog</th><th>Unaccounted</th></tr></thead><tbody>{rows}</tbody></table></div></div>"""
+
     not_tested_html = ''
     if data['not_tested']:
         rows = ''.join(f"<tr><td>{escape(n['kind'])}</td><td>{escape(n['what'])}</td><td>{escape(n['why'])}</td></tr>"
@@ -318,6 +349,7 @@ td.dt-row-num {{ color: #556; font-size: 0.8em; text-align: right; width: 30px; 
     </span>
 </div>
 {not_tested_html}
+{udp_html}
 
 <!-- Tabs — connection health first -->
 <ul class="nav nav-tabs mb-2" role="tablist">
@@ -1429,6 +1461,46 @@ def parse_tar_archive(filepath):
     for why, n in unreach.most_common():
         nt.append({'kind': 'unreachable', 'what': f'{n} targets', 'why': why})
     data['not_tested'] = nt
+
+    # UDP pass (FS_UDP=1): per-path results, and each receiving host's counters for that phase
+    host_of_ip = {}
+    for l in read_file('nic_diagnostics.txt').splitlines():
+        p = l.split()
+        if len(p) >= 3:
+            host_of_ip[p[2]] = p[0]
+    hostc = {}   # (iter, phase, host) -> (socket, backlog)
+    for l in read_file('udp_host_counters.txt').splitlines():
+        p = l.split()
+        if len(p) >= 7:
+            hostc[(p[0], p[1], p[2])] = (int(p[3]), int(p[6]))
+    nicd = defaultdict(int)   # (iter, phase, host) -> rx drops + rx_oob on its rail NICs
+    nic_host = {f"{l.split()[0]}_{l.split()[1]}": l.split()[0]
+                for l in read_file('nic_diagnostics.txt').splitlines() if len(l.split()) >= 2}
+    for l in read_file('udp_nic_drops.txt').splitlines():
+        p = l.split()
+        if len(p) >= 5 and p[2] in nic_host:
+            nicd[(p[0], p[1], nic_host[p[2]])] += int(p[3]) + int(p[4])
+    udp, it, ph = [], '', ''
+    for line in read_file('iperf3_udp_results.txt').splitlines():
+        mm = re.match(r'^###\s+iteration:(\d+)\s+phase:(\S+)', line)
+        if mm:
+            it, ph = 'iter' + mm.group(1), mm.group(2)
+            continue
+        m = re.match(r'^(\S+),(\S+),\[SUM\].*?([\d.]+)\s+Gbits/sec\s+([\d.]+)\s+ms\s+(\d+)/(\d+)\s+\(([\d.e+-]+)%\)\s+receiver', line)
+        if m:
+            dst_host = host_of_ip.get(m.group(2), '')
+            sock, back = hostc.get((it, ph, dst_host), (0, 0))
+            nic = nicd.get((it, ph, dst_host), 0)
+            lost, sent = int(m.group(5)), int(m.group(6))
+            udp.append({'iter': it, 'phase': ph, 'src': m.group(1), 'dst': m.group(2),
+                        'src_host': host_of_ip.get(m.group(1), ''), 'dst_host': dst_host,
+                        'gbps': float(m.group(3)), 'lost': lost, 'sent': sent,
+                        'sock': sock, 'nic': nic, 'back': back,
+                        'unacc': max(0, lost - sock - nic - back)})
+        elif line.strip() and ',ERROR' in line:
+            udp.append({'iter': it, 'phase': ph, 'error': line.split(',', 2)[2]})
+    data['udp'] = udp
+    data['iperf3_versions'] = [l.split() for l in read_file('iperf3_versions.txt').splitlines() if l.split()]
 
     # Line rate: collector's value, else the most common NIC speed, else best run seen
     speeds = [l.split()[3] for l in read_file('nic_diagnostics.txt').splitlines()

@@ -31,6 +31,11 @@ Optional (default)
   FS_STREAMS       iperf3 parallel streams, >=2 (16)
   FS_TOS           IP TOS byte for the test traffic, 0-255 (iperf3 -S), e.g. 106 = DSCP 26
                    + ECT(0); TCP keeps the DSCP, the kernel sets the ECN bits (unset: 0)
+  FS_UDP=1         after the TCP phases, run the same pairs with UDP and no rate cap
+                   (iperf3 -u -b 0, datagrams sized to the path MTU). Loss is split into
+                   receiver socket, NIC, kernel backlog and unaccounted (likely fabric).
+                   With FS_TOS the whole TOS byte, ECN bits included, is sent.
+  FS_UDP_DURATION  seconds per UDP run (FS_DURATION)
   FS_PORT          iperf3 port (5201)
   FS_SSH_USER      ssh user; non-root runs remote steps with sudo -n (root)
   FS_SSH_PARALLEL  ssh sessions at once for sweep and collection (64)
@@ -209,6 +214,9 @@ echo "=== addr ==="; ip -o -4 addr show
 echo "=== link ==="; ip -o link show
 echo "=== tools ==="
 for c in iperf3 ethtool lldpcli ibstat ss timeout; do p=$(command -v $c); echo "$c ${p:--}"; done
+echo "=== iperf3 ==="; [ -n "$(command -v iperf3)" ] && iperf3 --version 2>&1 | head -n 1
+echo "=== sysctl ==="
+for s in rmem_max wmem_max; do echo "$s $(cat /proc/sys/net/core/$s 2>&1)"; done
 if [ -n "$BUSY_CHECK" ]; then
     out=$(timeout 20 bash -c "$BUSY_CHECK" 2>&1); rc=$?
     echo "=== busy ==="; echo "rc=$rc"; echo "$out" | head -n 20
@@ -311,6 +319,24 @@ if [ -n "$rcv" ]; then echo "$rcv retransmits:${retr:-0}"
 else echo "ERROR rc=$rc $(echo "$out" | grep -i -m1 error | tr -s ' ')"; fi
 EOF
 
+# One UDP run, no rate cap: src dst port streams secs len [tos] -> "[SUM] ... receiver" or "ERROR ..."
+read -r -d '' UDP_SCRIPT <<'EOF'
+out=$(iperf3 --connect-timeout 5000 -u -b 0 -l "$6" -c "$2" -B "$1" -p "$3" -P "$4" -t "$5" -f g ${7:+-S $7} 2>&1); rc=$?
+rcv=$(echo "$out" | grep -m1 'SUM.*receiver')
+if [ -n "$rcv" ]; then echo "$rcv"
+else echo "ERROR rc=$rc $(echo "$out" | grep -i -m1 error | tr -s ' ')"; fi
+EOF
+
+# Host-side UDP loss counters: "host InErrors RcvbufErrors SndbufErrors softnet_dropped".
+# InErrors includes RcvbufErrors; softnet_stat column 2 (hex) is the per-CPU backlog drop count.
+read -r -d '' UDPHOST_SCRIPT <<'EOF'
+h=$(hostname -s)
+u=$(awk '/^Udp:/ { n++; if (n == 1) split($0, k); else for (i = 2; i <= NF; i++) v[k[i]] = $i }
+    END { printf "%d %d %d", v["InErrors"], v["RcvbufErrors"], v["SndbufErrors"] }' /proc/net/snmp)
+d=0; while read -r a b rest; do d=$(( d + 16#$b )); done < /proc/net/softnet_stat
+echo "$h $u $d"
+EOF
+
 # ---------- helpers on discovery files ----------
 
 section() {  # file name -> lines of "=== name ===" section
@@ -377,13 +403,22 @@ check_path() {
       echo "${out:-SSH no output}" | tail -n1 > "$PATHS/$key" ) &
 }
 
-# run_path key src_k src_r dst_k dst_r: one iperf3 run, appends to $PHASE_OUT
+# run_path key src_k src_r dst_k dst_r [udp]: one iperf3 run, appends to $PHASE_OUT
 run_path() {
-    local key=$1 sk=$2 sr=$3 dk=$4 dr=$5 st
+    local key=$1 sk=$2 sr=$3 dk=$4 dr=$5 mode=${6:-tcp} st
     st=$(cat "$PATHS/$key")
     if [[ $st != OK ]]; then
         echo "$ITER $PHASE ${T_HOST[$sk]} ${RIP[$sk,$sr]} ${T_HOST[$dk]} ${RIP[$dk,$dr]} $st" >> "$PATH_EXCL"
         log "  skip ${T_HOST[$sk]} ${RIP[$sk,$sr]} -> ${T_HOST[$dk]} ${RIP[$dk,$dr]}: $st"
+        return
+    fi
+    if [[ $mode == udp ]]; then
+        local m1=${RMTU[$sk,$sr]:-1500} m2=${RMTU[$dk,$dr]:-1500}
+        local len=$(( (m1 < m2 ? m1 : m2) - 28 ))   # largest datagram that needs no fragmenting
+        ( out=$(timeout $(( FS_UDP_DURATION + 30 )) ssh "${SSH_OPTS[@]}" "${T_TARGET[$sk]}" $SUDO bash -s -- \
+                  "${RIP[$sk,$sr]}" "${RIP[$dk,$dr]}" "$FS_PORT" "$FS_STREAMS" "$FS_UDP_DURATION" "$len" "$FS_TOS" <<<"$UDP_SCRIPT" 2>&1)
+          [[ -n $out ]] || out="ERROR timeout or ssh failure"
+          echo "${RIP[$sk,$sr]},${RIP[$dk,$dr]},${out%%$'\n'*}" >> "$PHASE_OUT" ) &
         return
     fi
     ( out=$(timeout $(( FS_DURATION + 30 )) ssh "${SSH_OPTS[@]}" "${T_TARGET[$sk]}" $SUDO bash -s -- \
@@ -399,6 +434,62 @@ collect_counters() {  # script outfile: run a counter script on every tested hos
         rbash "${T_TARGET[$k]}" "${RNIC[$k,0]}" "${RNIC[$k,1]}" <<<"$script" >> "$outfile" 2>> "$RUNLOG_SSH" &
     done
     wait
+}
+
+# UDP loss placement, the same rule as the dashboard: per phase and receiving host,
+# unaccounted = lost - (that host's InErrors + backlog drops + rail-NIC rx drops), floored at 0.
+# Files: ipmap (ip host rail), nicmap (host_nic host), UDP results, host counters, NIC drops.
+# -v t="iterN Ux" limits it to one phase. Prints: lost sent socket nic backlog unaccounted.
+UDP_ATTR_AWK='
+FNR == 1 { f++ }
+f == 1 { host[$1] = $2; next }
+f == 2 { nh[$1] = $2; next }
+f == 3 { if (/^### /) { split($2, a, ":"); split($3, b, ":"); ph = "iter" a[2] " " b[2]; next }
+         if (t != "" && ph != t) next
+         n = 0; for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+\/[0-9]+$/) { split($i, x, "/"); n = 1 }
+         if (!n) next
+         split($1, s, ","); k = ph SUBSEP host[s[2]]; L[k] += x[1]; sent += x[2]; next }
+f == 4 { k = $1 " " $2 SUBSEP $3; SK[k] += $4; BK[k] += $7; next }
+f == 5 { k = $1 " " $2 SUBSEP nh[$3]; NK[k] += $4 + $5 }
+END { for (k in L) { lost += L[k]; sock += SK[k]; nic += NK[k]; back += BK[k]
+                     u = L[k] - SK[k] - NK[k] - BK[k]; if (u > 0) un += u }
+      printf "%d %d %d %d %d %d\n", lost, sent, sock, nic, back, un }'
+
+udp_attr() {  # [iterN Ux] -> "lost sent socket nic backlog unaccounted"
+    awk -v t="$1" "$UDP_ATTR_AWK" "$WORK/ipmap" "$WORK/nicmap" "$UDP_RESULTS" \
+        "$COLLECT_DIR/udp_host_counters.txt" "$COLLECT_DIR/udp_nic_drops.txt"
+}
+
+# UDP phases U1 (same rail) and U2 (cross) on the current pairs, with host and NIC
+# counters read around each phase so lost datagrams can be placed.
+udp_phases() {
+    local u p ck sk a=$WORK/udp.0
+    collect_counters "$UDPHOST_SCRIPT" "$a.host"; collect_drops "$a.nic"
+    for u in 1 2; do
+        PHASE=U$u; PHASE_OUT=$WORK/phase.$ITER.$PHASE; : > "$PHASE_OUT"
+        [[ $u == 1 ]] && log "Phase U1: UDP A->A and B->B at once (-b 0)" || log "Phase U2: UDP A->B both directions at once (-b 0)"
+        echo "### iteration:${ITER} phase:${PHASE}" >> "$UDP_RESULTS"
+        for (( p = 0; p < ${#PC[@]}; p++ )); do
+            ck=${PC[p]}; sk=${PS[p]}
+            if [[ $u == 1 ]]; then run_path p1a_$p $ck 0 $sk 0 udp; run_path p1b_$p $sk 1 $ck 1 udp
+            else run_path p2a_$p $ck 0 $sk 1 udp; run_path p2b_$p $sk 0 $ck 1 udp; fi
+        done
+        wait
+        column -t < "$PHASE_OUT" | tee -a "$UDP_RESULTS"
+        local b=$WORK/udp.$u
+        collect_counters "$UDPHOST_SCRIPT" "$b.host"; collect_drops "$b.nic"
+        # deltas: "iterN Uu host dInErrors dRcvbufErrors dSndbufErrors dSoftnet" and "iterN Uu host_nic drx doob"
+        awk -v t="iter$ITER $PHASE" 'NR==FNR {for (i = 2; i <= 5; i++) p[$1, i] = $i; next}
+            ($1, 2) in p {printf "%s %s", t, $1; for (i = 2; i <= 5; i++) printf " %d", $i - p[$1, i]; print ""}' \
+            "$a.host" "$b.host" >> "$COLLECT_DIR/udp_host_counters.txt"
+        awk -v t="iter$ITER $PHASE" 'NR==FNR {rx[$1] = $3; oob[$1] = $5; next} ($1 in rx) {
+                drx = ($3 ~ /^[0-9]+$/ && rx[$1] ~ /^[0-9]+$/) ? $3 - rx[$1] : 0
+                doob = ($5 ~ /^[0-9]+$/ && oob[$1] ~ /^[0-9]+$/) ? $5 - oob[$1] : 0
+                print t, $1, drx, doob }' "$a.nic" "$b.nic" >> "$COLLECT_DIR/udp_nic_drops.txt"
+        local r; read -r -a r <<<"$(udp_attr "iter$ITER $PHASE")"
+        log "  $PHASE loss: ${r[0]} of ${r[1]} datagrams lost ($(awk -v l="${r[0]}" -v s="${r[1]}" 'BEGIN {printf "%.3f", s ? 100 * l / s : 0}')%): receiver socket ${r[2]}, NIC ${r[3]}, kernel backlog ${r[4]}, unaccounted ${r[5]}"
+        a=$b
+    done
 }
 
 collect_drops() {
@@ -460,9 +551,11 @@ main() {
     : "${FS_BUSY_CHECK:=$WEKA_BUSY_CHECK}"
     [[ $FS_BUSY_CHECK == none ]] && FS_BUSY_CHECK=""
     [[ $1 =~ ^[0-9]+$ ]] && FS_DURATION=$1
-    : "${FS_DURATION:=120}"
+    : "${FS_DURATION:=120}" "${FS_UDP:=0}"
+    : "${FS_UDP_DURATION:=$FS_DURATION}"
+    [[ $FS_UDP == 0 || $FS_UDP == 1 ]] || die "FS_UDP must be 0 or 1, got '$FS_UDP'"
     local v
-    for v in FS_DURATION FS_ITER FS_STREAMS FS_PORT FS_SSH_PARALLEL FS_MAX_TARGETS FS_OK_PCT FS_SLOW_PCT; do
+    for v in FS_DURATION FS_UDP_DURATION FS_ITER FS_STREAMS FS_PORT FS_SSH_PARALLEL FS_MAX_TARGETS FS_OK_PCT FS_SLOW_PCT; do
         [[ ${!v} =~ ^[0-9]+$ ]] && (( ${!v} > 0 )) || die "$v must be a positive integer, got '${!v}'"
     done
     (( FS_STREAMS >= 2 )) || die "FS_STREAMS must be >= 2 (iperf3 prints no [SUM] line for one stream)"
@@ -593,6 +686,18 @@ main() {
         done > "$COLLECT_DIR/busy_check.txt"
     fi
 
+    # iperf3 build and socket-buffer limits per host (UDP ceilings depend on both)
+    for k in "${ELIG[@]}"; do
+        echo "${T_HOST[$k]} $(section "${DISC[$k]}" iperf3 | awk '{print $2; exit}') $(section "${DISC[$k]}" sysctl | awk '{printf "%s ", $2}')"
+    done | sort -V > "$COLLECT_DIR/iperf3_versions.txt"
+    if [[ $FS_UDP == 1 ]]; then
+        # before 3.16 iperf3 runs every stream in one thread, so UDP tops out on host CPU
+        local old; old=$(awk 'NF >= 2 && $2 ~ /^[0-9]/ { split($2, v, "."); if (v[1] < 3 || (v[1] == 3 && v[2] < 16)) printf "%s(%s) ", $1, $2 }' "$COLLECT_DIR/iperf3_versions.txt")
+        [[ -n $old ]] && log "WARNING: iperf3 older than 3.16 (single-threaded, UDP ceiling is host CPU-bound): $old"
+        local small; small=$(awk '$3 ~ /^[0-9]+$/ && $3 < 4194304 { printf "%s(%s) ", $1, $3 }' "$COLLECT_DIR/iperf3_versions.txt")
+        [[ -n $small ]] && log "NOTE: net.core.rmem_max under 4 MiB, receiver-socket UDP loss will be inflated: $small"
+    fi
+
     # rail table: what an engineer checks before load starts
     {
         echo "Host Target Rail_A_NIC Rail_A_IP MTU_A State_A Rail_B_NIC Rail_B_IP MTU_B State_B"
@@ -686,6 +791,19 @@ main() {
     (( FS_ITER > rounds )) && log "Iterations past $rounds repeat the pairings from the start"
     [[ -n $FS_TOS ]] && log "Marking: iperf3 -S $FS_TOS = DSCP $(( FS_TOS >> 2 )), ECN bits $(( FS_TOS & 3 )) (TCP: the kernel owns the ECN bits)"
     : > "$COLLECT_DIR/pairs.txt"; : > "$COLLECT_DIR/prio_counters.txt"
+    # rail IP -> host/rail, and host_nic -> host, for the summary and UDP loss placement
+    for k in "${ELIG[@]}"; do
+        [[ ${RIP[$k,0]} != none ]] && echo "${RIP[$k,0]} ${T_HOST[$k]} A"
+        [[ ${RIP[$k,1]} != none ]] && echo "${RIP[$k,1]} ${T_HOST[$k]} B"
+    done > "$WORK/ipmap"
+    for k in "${ELIG[@]}"; do for r in 0 1; do
+        [[ ${RNIC[$k,$r]} != - ]] && echo "${T_HOST[$k]}_${RNIC[$k,$r]} ${T_HOST[$k]}"
+    done; done > "$WORK/nicmap"
+    UDP_RESULTS=$COLLECT_DIR/iperf3_udp_results.txt
+    if [[ $FS_UDP == 1 ]]; then
+        : > "$UDP_RESULTS"; : > "$COLLECT_DIR/udp_host_counters.txt"; : > "$COLLECT_DIR/udp_nic_drops.txt"
+        log "UDP pass on: phases U1/U2 after the TCP phases, ${FS_UDP_DURATION}s each, no rate cap"
+    fi
     for (( ITER = 1; ITER <= FS_ITER; ITER++ )); do
         round_pairs $(( (ITER - 1) % rounds ))
         log "============ Iteration $ITER of $FS_ITER (${#PC[@]} pairs) ============"
@@ -718,6 +836,7 @@ main() {
             local errs; errs=$(grep -c ',ERROR' "$PHASE_OUT")
             [[ $errs -gt 0 ]] && log "WARNING: $errs runs in phase $PHASE returned no result (lines with ERROR above)"
         done
+        [[ $FS_UDP == 1 ]] && udp_phases
         collect_drops "$DROPS_POST"
         collect_counters "$PRIO_SCRIPT" "$WORK/prio_post"
         # per-priority / pause / ECN counter increases: "iterN host_nic counter delta"
@@ -760,10 +879,6 @@ main() {
         echo " $LABEL DATA PLANE VALIDATION SUMMARY: $(date)"
         echo "=================================================================="
         local map=$WORK/ipmap
-        for k in "${ELIG[@]}"; do
-            [[ ${RIP[$k,0]} != none ]] && echo "${RIP[$k,0]} ${T_HOST[$k]} A"
-            [[ ${RIP[$k,1]} != none ]] && echo "${RIP[$k,1]} ${T_HOST[$k]} B"
-        done > "$map"
         if grep -q 'Gbits/sec' "$RESULTS"; then
             echo "Per-host throughput, worst first (Gbps; each rail averaged over all its runs):"
             grep 'Gbits/sec' "$RESULTS" | awk -F'[, ]+' -v ok="$(( ${LINE_GBPS:-0} * FS_OK_PCT ))" -v slow="$(( ${LINE_GBPS:-0} * FS_SLOW_PCT ))" '
@@ -787,6 +902,24 @@ main() {
         echo ""
         echo "  Hosts tested: ${#ELIG[@]} | Rail IPs down/excluded: ${#DOWN_IP[@]} | Paths skipped: $(wc -l < "$PATH_EXCL" | tr -d ' ') (paths_excluded.txt)"
         echo "  Runs with no result: $(grep -c ',ERROR' "$RESULTS")"
+        if [[ $FS_UDP == 1 ]]; then
+            echo ""
+            if grep -q 'Gbits/sec' "$UDP_RESULTS"; then
+                echo "UDP (-b 0) by receiving host: avg Gbps per run, datagrams lost/sent, loss %:"
+                grep 'Gbits/sec' "$UDP_RESULTS" | awk -F'[, ]+' '
+                    NR==FNR { host[$1]=$2; next }
+                    { for (i = 1; i <= NF; i++) { if ($i == "Gbits/sec") g = $(i-1); if ($i ~ /^[0-9]+\/[0-9]+$/) split($i, x, "/") }
+                      h = host[$2]; gs[h] += g; c[h]++; l[h] += x[1]; s[h] += x[2] }
+                    END { print "Host Avg_Gbps Lost/Sent Loss_%"
+                          for (h in c) printf "%s %.1f %d/%d %.3f\n", h, gs[h] / c[h], l[h], s[h], s[h] ? 100 * l[h] / s[h] : 0 }' \
+                    "$map" - | { read -r hdr; echo "$hdr"; sort -k4 -rn; } | column -t | sed 's/^/  /'
+                local r; read -r -a r <<<"$(udp_attr "")"
+                echo "  Lost datagrams ${r[0]} of ${r[1]}: receiver socket ${r[2]}, NIC ${r[3]}, kernel backlog ${r[4]}, unaccounted (likely fabric) ${r[5]}"
+            else
+                echo "  No UDP results collected."
+            fi
+            echo "  UDP runs with no result: $(grep -c ',ERROR' "$UDP_RESULTS")"
+        fi
         echo "=================================================================="
     } >&2
 
@@ -813,6 +946,8 @@ main() {
         echo "pairing=round-robin"
         echo "pairs_covered=$PAIRS_COVERED"
         echo "pairs_total=$PAIRS_TOTAL"
+        echo "udp=$FS_UDP"
+        echo "udp_duration=$FS_UDP_DURATION"
     } > "$COLLECT_DIR/metadata.txt"
     for k in "${ELIG[@]}"; do
         echo "${T_HOST[$k]} ${T_TARGET[$k]} ${RIP[$k,0]} ${RIP[$k,1]} ${RNIC[$k,0]} ${RNIC[$k,1]}"
