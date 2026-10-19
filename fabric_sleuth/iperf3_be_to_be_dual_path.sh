@@ -398,7 +398,8 @@ check_path() {
     if ! rail_ok $sk $sr; then echo "DOWN ${T_HOST[$sk]}: ${RSTATE[$sk,$sr]}" > "$PATHS/$key"; return; fi
     if ! rail_ok $dk $dr; then echo "DOWN ${T_HOST[$dk]}: ${RSTATE[$dk,$dr]}" > "$PATHS/$key"; return; fi
     local m1=${RMTU[$sk,$sr]:-1500} m2=${RMTU[$dk,$dr]:-1500}
-    local size=$(( (m1 < m2 ? m1 : m2) - 28 ))
+    # the larger MTU: a 1500/9000 pair must fail here, not pass at 1472 and run with retransmits
+    local size=$(( (m1 > m2 ? m1 : m2) - 28 ))
     ( out=$(rbash "${T_TARGET[$sk]}" "${RIP[$sk,$sr]}" "${RIP[$dk,$dr]}" "${RNIC[$sk,$sr]}" $size <<<"$PATH_SCRIPT" 2>&1)
       echo "${out:-SSH no output}" | tail -n1 > "$PATHS/$key" ) &
 }
@@ -526,6 +527,7 @@ stop_servers() {
 
 cleanup() {
     local k
+    trap '' INT TERM   # a second Ctrl-C must not cut cleanup short (iperf3 left running)
     stop_servers
     for k in "${T_TARGET[@]}" "${!REACH_ONLY[@]}"; do
         ssh -O exit -o "ControlPath=$SOCKET_DIR/%C" -l "$FS_SSH_USER" "$k" >> "$WORK/cleanup.log" 2>&1 &
@@ -582,6 +584,8 @@ main() {
               -o ServerAliveInterval=15 -l "$FS_SSH_USER")
     declare -gA T_TARGET T_HOST DISC RNIC RIP RMTU RSTATE STARTED REACH_ONLY DOWN_IP
     trap cleanup EXIT
+    # explicit exits so the EXIT trap always runs on Ctrl-C or kill, whatever command was running
+    trap 'exit 130' INT; trap 'exit 143' TERM
     parse_rails
     log "Begin $(date) | ${#TARGETS[@]} targets | rails: $RAIL_MODE A=${RAIL_SPEC[0]// /,} B=${RAIL_SPEC[1]// /,} | ${FS_DURATION}s x $FS_ITER iterations"
 
@@ -713,6 +717,14 @@ main() {
     else
         log "All rails on all ${#ELIG[@]} hosts have an address and link"
     fi
+    # one MTU per rail expected; name the odd hosts (their paths fail the no-fragment check)
+    local rr
+    for rr in 0 1; do
+        local mt; mt=$(for k in "${ELIG[@]}"; do rail_ok $k $rr && echo "${RMTU[$k,$rr]:-?} ${T_HOST[$k]}"; done |
+            awk '{if (!($1 in n)) d++; n[$1]++; h[$1] = h[$1] " " $2} END {if (d < 2) exit; for (m in n) if (n[m] > b) {b = n[m]; mm = m}
+                 printf "most at %s;", mm; for (m in n) if (m != mm) printf " %s on%s;", m, h[m]}')
+        [[ -n $mt ]] && log "WARNING: rail $( [[ $rr == 0 ]] && echo A || echo B) MTUs differ: $mt paths across them fail the no-fragment check and are skipped"
+    done
 
     # --- 4. diagnostics ---
     log "Collecting NIC diagnostics..."
@@ -898,7 +910,7 @@ main() {
             echo "  No iperf3 results collected."
         fi
         echo ""
-        echo "  Hosts tested: ${#ELIG[@]} | Rail IPs down/excluded: ${#DOWN_IP[@]} | Paths skipped: $(wc -l < "$PATH_EXCL" | tr -d ' ') (paths_excluded.txt)"
+        echo "  Hosts tested: ${#ELIG[@]} | Rails unusable: $(awk 'NR > 1 {n += ($6 != "ok") + ($10 != "ok")} END {print n + 0}' "$COLLECT_DIR/rails.txt") (rails.txt) | Paths skipped: $(wc -l < "$PATH_EXCL" | tr -d ' ') (paths_excluded.txt)"
         echo "  Runs with no result: $(grep -c ',ERROR' "$RESULTS")"
         if [[ $FS_UDP == 1 ]]; then
             echo ""
