@@ -281,7 +281,8 @@ f'<table class="table table-sm table-striped"><thead><tr><th>Finding</th><th>Hos
     fec_html = ''
     fr = data.get('fec_rate', [])
     if fr:
-        exposed = [f for f in fr if f['status'] != 'n/a']
+        exposed = [f for f in fr if f['status'] not in ('n/a', 'FEC off')]
+        n_off = sum(1 for f in fr if f['status'] == 'FEC off')
         cnt = {s: sum(1 for f in fr if f['status'] == s) for s in ('UNCORRECTABLE', 'OVER FEC LIMIT', 'WATCH')}
         show = [f for f in fr if f['status'] not in ('ok', 'n/a')] or exposed[:10]
         cls = {'UNCORRECTABLE': 'badge-down', 'OVER FEC LIMIT': 'badge-down', 'WATCH': 'badge-slow', 'ok': 'badge-ok'}
@@ -294,7 +295,7 @@ f'<table class="table table-sm table-striped"><thead><tr><th>Finding</th><th>Hos
                     f"<td>{ber}</td><td>{cb}</td><td>{ub}</td><td>{f['secs']}</td><td>{'yes' if f['reset'] else ''}</td></tr>")
         rows = ''.join(fec_row(f) for f in show)
         fec_html = f"""<div class="card mb-3"><div class="card-header">FEC during this run (rate over {max(f['secs'] for f in fr)}s, not lifetime counts) |
-counters on {len(exposed)} of {len(fr)} rail NICs | <b class="{'stat-bad' if cnt['UNCORRECTABLE'] else 'stat-good'}">{cnt['UNCORRECTABLE']}</b> uncorrectable |
+counters on {len(exposed)} of {len(fr)} rail NICs{f' ({n_off} with FEC off)' if n_off else ''} | <b class="{'stat-bad' if cnt['UNCORRECTABLE'] else 'stat-good'}">{cnt['UNCORRECTABLE']}</b> uncorrectable |
 <b class="{'stat-bad' if cnt['OVER FEC LIMIT'] else 'stat-good'}">{cnt['OVER FEC LIMIT']}</b> over the FEC limit | <b class="{'stat-warn' if cnt['WATCH'] else 'stat-good'}">{cnt['WATCH']}</b> watch</div>
 <div class="card-body" style="max-height:320px; overflow-y:auto;">
 <p class="mb-1" style="font-size:0.8rem; color:#8899aa;">Pre-FEC BER = corrected bits / (seconds x link rate). Over limit: at or above {FEC_LIMIT_BER:.1e}, the correction limit commonly quoted for RS(544,514) "KP4" FEC on 200/400G PAM4 links (NRZ links on RS(528,514) correct less). Watch: {FEC_WATCH_BER:.0e}, a heuristic. Any uncorrectable block means errors reached the host.</p>
@@ -1898,11 +1899,13 @@ def parse_tar_archive(filepath):
         p = l.split()
         if len(p) < 7:
             continue
-        a = agg.setdefault(p[1], {'secs': 0, 'cb': None, 'ub': None, 'bits': None, 'sym': None, 'reset': False})
+        a = agg.setdefault(p[1], {'secs': 0, 'cb': None, 'ub': None, 'bits': None, 'sym': None, 'reset': False, 'off': False})
         a['secs'] += _int(p[2]) or 0
         for key, v in zip(('cb', 'ub', 'bits', 'sym'), p[3:7]):
             if v == 'reset':
                 a['reset'] = True
+            elif v == 'off':
+                a['off'] = True
             elif _int(v) is not None:
                 a[key] = (a[key] or 0) + int(v)
     fec_rate = []
@@ -1915,13 +1918,15 @@ def parse_tar_archive(filepath):
             st = 'OVER FEC LIMIT'
         elif ber is not None and ber >= FEC_WATCH_BER:
             st = 'WATCH'
+        elif a['off'] and a['cb'] is None and a['bits'] is None:
+            st = 'FEC off'
         elif a['cb'] is None and a['bits'] is None:
             st = 'n/a'
         else:
             st = 'ok'
         fec_rate.append({'nic': hn, 'host': nic_host.get(hn, ''), 'secs': a['secs'], 'cb': a['cb'], 'ub': a['ub'],
                          'bits': a['bits'], 'ber': ber, 'status': st, 'reset': a['reset']})
-    order = {'UNCORRECTABLE': 0, 'OVER FEC LIMIT': 1, 'WATCH': 2, 'ok': 3, 'n/a': 4}
+    order = {'UNCORRECTABLE': 0, 'OVER FEC LIMIT': 1, 'WATCH': 2, 'ok': 3, 'FEC off': 4, 'n/a': 5}
     fec_rate.sort(key=lambda f: (order[f['status']], -(f['ber'] or 0), -(f['cb'] or 0)))
     data['fec_rate'] = fec_rate
     fec_by_nic = {f['nic']: f for f in fec_rate}

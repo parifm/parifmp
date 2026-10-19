@@ -266,7 +266,9 @@ for nic in "$@"; do
             for (i = 2; i <= NF; i++) if ($i == "dBm") v[ch] = $(i-1)
         }
         END { for (c = 1; c <= 4; c++) printf "%s ", (c in v ? v[c] : "n/a") }')
-    temp=$(echo "$mod" | awk '/Module temperature/ {for (i = 1; i <= NF; i++) if ($i == "degrees") {print $(i-1); exit}}')
+    # passive DACs have no monitoring and report 0.00 C at 0 V: that is n/a, not a reading
+    temp=$(echo "$mod" | awk '/Module temperature/ && t == "" {for (i = 1; i <= NF; i++) if ($i == "degrees") {t = $(i-1); break}}
+        /Module voltage *:/ && $NF == "V" && $(NF-1) + 0 == 0 {z = 1} END {if (t != "" && !z) print t}')
     echo "@@NIC_DIAG $h $nic ${ip:-none} ${speed:-unknown} $* $rxp${temp:-n/a}"
     if have lldpcli; then lldp=$(lldpcli show neighbors ports "$nic" 2>&1); else lldp=""; fi
     chassis=$(echo "$lldp" | awk -F': *' '/SysName:/{gsub(/ /,"_",$2); print $2; exit}')
@@ -301,8 +303,8 @@ done
 EOF
 
 # Per-priority, PFC/pause and ECN/CNP counters for the rail NICs ($@): "host_nic counter value".
-# Names differ by driver (mlx5 rx_prio3_pause, ice rx_priority_3_xon.nic, bnxt pfc_*); per-queue lines skipped.
-# RoCE ECN/CNP/retransmit counters live only in the RDMA port's sysfs, printed as "rdma:<name>".
+# Names differ by driver (mlx5 rx_prio3_pause, ice rx_priority_3_xon.nic, bnxt pfc_*); per-queue/ring lines
+# (chN_, rxN_, txN_, _qN, queue) skipped. RoCE ECN/CNP/retransmit counters live only in the RDMA port's sysfs, printed as "rdma:<name>".
 # FS_SYSFS (default /sys) is a test hook.
 read -r -d '' PRIO_SCRIPT <<'EOF'
 h=$(hostname -s); sys=${FS_SYSFS:-/sys}
@@ -310,7 +312,7 @@ for nic in "$@"; do
     [ "$nic" = - ] && continue
     ethtool -S "$nic" 2>&1 | awk -v k="${h}_${nic}" '$2 ~ /^[0-9]+$/ && $1 ~ /:$/ {
         n = $1; sub(/:$/, "", n); l = tolower(n)
-        if (l ~ /prio|pri[0-9]|pfc|pause|xon|xoff|ecn|cnp/ && l !~ /ch[0-9]|_q[0-9]|queue/) print k, n, $2 }'
+        if (l ~ /prio|pri[0-9]|pfc|pause|xon|xoff|ecn|cnp/ && l !~ /ch[0-9]|_q[0-9]|queue|^[rt]x[0-9]+_/) print k, n, $2 }'
     # the RDMA port whose default GID is on this NIC, or on its only lower device (a VLAN's parent)
     phys=$nic; n=0
     for l in "$sys/class/net/$nic"/lower_*; do [ -e "$l" ] && { phys=${l##*lower_}; n=$((n + 1)); }; done
@@ -319,7 +321,8 @@ for nic in "$@"; do
         [ "$(cat "$p/gid_attrs/ndevs/0" 2>&1)" = "$phys" ] || continue
         for f in "$p"/hw_counters/* "$p"/counters/*; do
             c=${f##*/}
-            case $c in *ecn*|*cnp*|*seq*|*nak*|*timeout*|*retrans*|*restart*|*discard*|*err*|*downed*) ;; *) continue ;; esac
+            case $c in *ecn*|*cnp*|*seq*|*nak*|*timeout*|*retrans*|*restart*|*discard*|*err*|*downed*|*out_of_buffer*|\
+                       *duplicate*|*exceeded*|*invalid*|*dropped*|*xmit_wait*) ;; *) continue ;; esac
             v=$(cat "$f" 2>&1)
             case $v in ''|*[!0-9]*) ;; *) echo "${h}_${nic} rdma:$c $v" ;; esac
         done
@@ -328,7 +331,8 @@ done
 EOF
 
 # FEC counters for the rail NICs ($@): "host_nic corrected_blocks uncorrectable_blocks corrected_bits symbol_errors".
-# Blocks come from the vendor-neutral ethtool -I --show-fec; corrected bits and symbol errors are mlx5 extras. na = not exposed.
+# Blocks come from the vendor-neutral ethtool -I --show-fec; corrected bits and symbol errors are mlx5 extras. na = not exposed,
+# off = the link runs without FEC (Active FEC encoding Off/None), so there is no pre-FEC BER.
 read -r -d '' FEC_SCRIPT <<'EOF'
 h=$(hostname -s)
 num() { awk -v k="$1" '$1 == k {for (i = 2; i <= NF; i++) if ($i ~ /^[0-9]+$/) {print $i; exit}}'; }
@@ -337,6 +341,7 @@ for nic in "$@"; do
     f=$(ethtool -I --show-fec "$nic" 2>&1); s=$(ethtool -S "$nic" 2>&1)
     cb=$(echo "$f" | num corrected_blocks:); ub=$(echo "$f" | num uncorrectable_blocks:)
     bits=$(echo "$s" | num rx_corrected_bits_phy:); sym=$(echo "$s" | num rx_pcs_symbol_err_phy:)
+    echo "$f" | grep -q -i -E '^Active FEC encoding: *(off|none)' && { cb=off; ub=off; bits=off; }
     echo "${h}_${nic} ${cb:-na} ${ub:-na} ${bits:-na} ${sym:-na}"
 done
 EOF
@@ -739,13 +744,14 @@ udp_phases() {
 fec_deltas() {
     awk -v t="$1" -v s="$2" 'NR==FNR {for (i = 2; i <= 5; i++) p[$1, i] = $i; next}
         ($1, 2) in p {printf "%s %s %d", t, $1, s
-            for (i = 2; i <= 5; i++) printf " %s", ($i ~ /^[0-9]+$/ && p[$1, i] ~ /^[0-9]+$/) ? ($i + 0 >= p[$1, i] + 0 ? $i - p[$1, i] : "reset") : "na"
+            for (i = 2; i <= 5; i++) printf " %s", ($i ~ /^[0-9]+$/ && p[$1, i] ~ /^[0-9]+$/) ? ($i + 0 >= p[$1, i] + 0 ? $i - p[$1, i] : "reset") : ($i == "off" ? "off" : "na")
             print ""}' "$WORK/fec_pre" "$WORK/fec_post" > "$WORK/fec_delta"
     cat "$WORK/fec_delta" >> "$COLLECT_DIR/fec_rates.txt"
-    local seen unc
+    local seen unc off
     seen=$(awk '$4 ~ /^[0-9]+$/ || $6 ~ /^[0-9]+$/' "$WORK/fec_delta" | wc -l | tr -d ' ')
+    off=$(awk '$4 == "off"' "$WORK/fec_delta" | wc -l | tr -d ' ')
     unc=$(awk '$5 ~ /^[0-9]+$/ && $5 > 0 {printf "%s(%s) ", $2, $5}' "$WORK/fec_delta")
-    log "FEC over ${2}s: counters exposed on $seen of $(wc -l < "$WORK/fec_delta" | tr -d ' ') rail NICs"
+    log "FEC over ${2}s: counters exposed on $seen of $(wc -l < "$WORK/fec_delta" | tr -d ' ') rail NICs$( (( off )) && echo "; FEC off on $off")"
     [[ -n $unc ]] && log "WARNING: uncorrectable FEC blocks (errors reach the host): $unc"
     return 0
 }
