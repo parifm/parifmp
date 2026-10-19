@@ -18,9 +18,18 @@ import shutil
 from collections import defaultdict, Counter
 from html import escape
 
-INPUT_FILE = sys.argv[1] if len(sys.argv) > 1 else 'dp_validation.tar.gz'
+# usage: generate_dashboard_v2.py <run>.tar.gz [output.html] [--compare <older run>.tar.gz]
+ARGS = sys.argv[1:]
+COMPARE_FILE = None
+if '--compare' in ARGS:
+    i = ARGS.index('--compare')
+    if i + 1 >= len(ARGS):
+        sys.exit('--compare needs an older run tarball')
+    COMPARE_FILE = ARGS[i + 1]
+    del ARGS[i:i + 2]
+INPUT_FILE = ARGS[0] if ARGS else 'dp_validation.tar.gz'
 # default: <run>.html next to the tarball
-OUTPUT_FILE = sys.argv[2] if len(sys.argv) > 2 else re.sub(r"\.tar\.gz$|\.tgz$", "", INPUT_FILE) + ".html"
+OUTPUT_FILE = ARGS[1] if len(ARGS) > 1 else re.sub(r"\.tar\.gz$|\.tgz$", "", INPUT_FILE) + ".html"
 
 
 # Pre-FEC BER levels. 2.4e-4 is the correction limit commonly quoted for RS(544,514) "KP4" FEC
@@ -287,6 +296,22 @@ counters on {len(exposed)} of {len(fr)} rail NICs | <b class="{'stat-bad' if cnt
 <p class="mb-1" style="font-size:0.8rem; color:#8899aa;">Pre-FEC BER = corrected bits / (seconds x link rate). Over limit: at or above {FEC_LIMIT_BER:.1e}, the correction limit commonly quoted for RS(544,514) "KP4" FEC on 200/400G PAM4 links (NRZ links on RS(528,514) correct less). Watch: {FEC_WATCH_BER:.0e}, a heuristic. Any uncorrectable block means errors reached the host.</p>
 <table class="table table-sm table-striped"><thead><tr><th>Host</th><th>NIC</th><th>Status</th><th>Pre-FEC BER</th><th>Corrected blocks</th><th>Uncorrectable</th><th>Seconds</th><th>Counter reset</th></tr></thead><tbody>{rows}</tbody></table></div></div>"""
 
+    # --compare: what changed per rail NIC since an older run
+    compare_html = ''
+    cmp_ = data.get('compare')
+    if cmp_:
+        rows = ''.join(f"<tr><td>{escape(h)}</td><td>{escape(n)}</td><td>{escape(k)}</td><td>{escape(str(o))}</td><td>{escape(str(v))}</td></tr>"
+                       for h, n, k, o, v in cmp_['changes'])
+        downs = ''
+        if cmp_['down_added'] or cmp_['down_cleared']:
+            downs = (f"<p class=\"mb-1\">Newly down: <b class=\"stat-bad\">{escape(', '.join(cmp_['down_added']) or 'none')}</b> | "
+                     f"Recovered: <b class=\"stat-good\">{escape(', '.join(cmp_['down_cleared']) or 'none')}</b></p>")
+        compare_html = f"""<div class="card mb-3"><div class="card-header">Compared with the run of {escape(cmp_['old_ts'])} ({escape(cmp_['old_label'])}):
+<b>{len(cmp_['changes'])}</b> NIC changes, {len(cmp_['down_added'])} newly down IPs, {len(cmp_['down_cleared'])} recovered</div>
+<div class="card-body" style="max-height:360px; overflow-y:auto;">{downs}
+<p class="mb-1" style="font-size:0.8rem; color:#8899aa;">Per rail NIC (host + NIC), since pairings differ between runs. Throughput changes of 10% or more are listed; a lifetime counter that went down was reset (reboot or driver reload).</p>
+{'<p class="text-success mb-0">No NIC-level changes.</p>' if not rows else f'<table class="table table-sm table-striped"><thead><tr><th>Host</th><th>NIC</th><th>What</th><th>Before</th><th>Now</th></tr></thead><tbody>{rows}</tbody></table>'}</div></div>"""
+
     no_drops_msg = ('<p class="text-warning mb-0">Drop counters were not read on this run: unknown, not zero.</p>'
                     if data.get('drops_unknown') else
                     '<p class="text-success mb-0">No packet drops detected during testing.</p>')
@@ -413,6 +438,7 @@ td.dt-row-num {{ color: #556; font-size: 0.8em; text-align: right; width: 30px; 
     </span>
 </div>
 {problems_html}
+{compare_html}
 {preflight_html}
 {fec_html}
 {not_tested_html}
@@ -1457,6 +1483,76 @@ $(document).ready(function() {{
     print(f"Dashboard generated: {output_path}")
 
 
+def nic_view(d):
+    """Per rail NIC ('host_nic') facts from one parsed run, for comparing runs."""
+    v = {}
+    ip_nic = {}
+    for line in d.get('_nic_diag_lines', []):
+        p = line.split()
+        if len(p) >= 16:
+            key = f"{p[0]}_{p[1]}"
+            ip_nic[p[2]] = key
+            v[key] = {'host': p[0], 'nic': p[1], 'ip': p[2], 'speed': p[3], 'fec': _int(p[4]), 'link_down': _int(p[9]),
+                      'gbps': [], 'drops': 0}
+    for r in d['iperf_results']:
+        for ip in (r['src'], r['dst']):
+            if ip in ip_nic:
+                v[ip_nic[ip]]['gbps'].append(r['gbps'])
+    for x in d['driver_info']:
+        k = f"{x['host']}_{x['nic']}"
+        if k in v:
+            v[k]['fw'] = f"{x['driver']} {x['version']} fw {x['firmware']}"
+    for x in d['lldp_info']:
+        k = f"{x['host']}_{x['nic']}"
+        if k in v:
+            v[k]['lldp'] = f"{x['switch']} {x['port_desc']}".strip()
+    for x in d['packet_drops']:
+        if x['host_nic'] in v:
+            v[x['host_nic']]['drops'] += x['rx_drop'] + x['tx_drop'] + x['rx_oob']
+    for f in d.get('fec_rate', []):
+        if f['nic'] in v:
+            v[f['nic']]['fec_status'] = f['status']
+    for k in v:
+        g = v[k]['gbps']
+        v[k]['avg'] = sum(g) / len(g) if g else None
+    return v
+
+
+def compare_runs(new, old):
+    """What changed per rail NIC between an older run and this one."""
+    nv, ov = nic_view(new), nic_view(old)
+    ch = []
+    for k in sorted(set(nv) | set(ov)):
+        n, o = nv.get(k), ov.get(k)
+        host, nic = (n or o)['host'], (n or o)['nic']
+        if not o:
+            ch.append((host, nic, 'new in this run', '', n['ip']))
+            continue
+        if not n:
+            ch.append((host, nic, 'missing from this run', o['ip'], ''))
+            continue
+        if n['avg'] is not None and o['avg'] is not None and o['avg'] > 0 and abs(n['avg'] - o['avg']) >= 0.1 * o['avg']:
+            ch.append((host, nic, 'throughput', f"{o['avg']:.1f} Gbps", f"{n['avg']:.1f} Gbps ({100 * (n['avg'] - o['avg']) / o['avg']:+.0f}%)"))
+        elif (n['avg'] is None) != (o['avg'] is None):
+            ch.append((host, nic, 'throughput', 'no result' if o['avg'] is None else f"{o['avg']:.1f} Gbps",
+                       'no result' if n['avg'] is None else f"{n['avg']:.1f} Gbps"))
+        if n['speed'] != o['speed']:
+            ch.append((host, nic, 'link speed', o['speed'], n['speed']))
+        for key, label in (('fec', 'FEC corrected (lifetime)'), ('link_down', 'link down events')):
+            if n[key] is not None and o[key] is not None and n[key] != o[key]:
+                d = n[key] - o[key]
+                ch.append((host, nic, label, f"{o[key]:,}", f"{n[key]:,} (" + (f"+{d:,}" if d > 0 else "counter reset") + ")"))
+        for key, label in (('fec_status', 'FEC status'), ('fw', 'driver/firmware'), ('lldp', 'switch port (LLDP)')):
+            if n.get(key) and o.get(key) and n[key] != o[key]:
+                ch.append((host, nic, label, o[key], n[key]))
+        if n['drops'] != o['drops']:
+            ch.append((host, nic, 'packet drops in run', f"{o['drops']:,}", f"{n['drops']:,}"))
+    added = sorted(set(new['down_ips']) - set(old['down_ips']))
+    cleared = sorted(set(old['down_ips']) - set(new['down_ips']))
+    return {'changes': ch, 'down_added': added, 'down_cleared': cleared,
+            'old_label': old['metadata'].get('label', ''), 'old_ts': old['metadata'].get('timestamp', '')}
+
+
 def _int(s):
     try:
         return int(s)
@@ -1603,6 +1699,7 @@ def parse_tar_archive(filepath):
                 'retransmits': int(m.group(6)) if m.group(6) else 0,
             })
 
+    data['_nic_diag_lines'] = read_file('nic_diagnostics.txt').splitlines()   # for --compare
     # NIC diagnostics
     optics_by_key = {}  # (host, nic) -> optics entry, for dedup with raw fallback
     for line in read_file('nic_diagnostics.txt').splitlines():
@@ -1870,6 +1967,14 @@ if __name__ == '__main__':
 
     print(f"Parsing {INPUT_FILE}...")
     data = parse_tar_archive(INPUT_FILE)
+    if COMPARE_FILE:
+        if not os.path.exists(COMPARE_FILE):
+            print(f"Error: {COMPARE_FILE} not found")
+            sys.exit(1)
+        print(f"Comparing with {COMPARE_FILE}...")
+        data['compare'] = compare_runs(data, parse_tar_archive(COMPARE_FILE))
+        print(f"  {len(data['compare']['changes'])} NIC changes, "
+              f"{len(data['compare']['down_added'])} newly down IPs, {len(data['compare']['down_cleared'])} recovered")
 
     print(f"  {len(data['iperf_results'])} iperf3 results")
     print(f"  {len(data['down_ips'])} down IPs")
