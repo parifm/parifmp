@@ -304,7 +304,9 @@ for nic in "$@"; do
     ip=$(ip -o -4 addr show dev "$nic" 2>&1 | awk '{split($4,a,"/"); print a[1]; exit}')
     rx=$(cat /sys/class/net/$nic/statistics/rx_dropped 2>&1); tx=$(cat /sys/class/net/$nic/statistics/tx_dropped 2>&1)
     oob=$(ethtool -S "$nic" 2>&1 | awk '$1=="rx_out_of_buffer:" {print $2; f=1} END {if (!f) print "na"}')
-    echo "${h}_${nic} ${ip:-none} ${rx:-na} ${tx:-na} ${oob:-na}"
+    # carrier drops: vendor-neutral, and counts flaps that mlx5 link_down_events_phy misses on some firmware
+    cd=$(cat /sys/class/net/$nic/carrier_down_count 2>&1); case $cd in ''|*[!0-9]*) cd=na ;; esac
+    echo "${h}_${nic} ${ip:-none} ${rx:-na} ${tx:-na} ${oob:-na} $cd"
 done
 EOF
 
@@ -692,7 +694,8 @@ collect_counters() {  # script outfile: run a counter script on every tested hos
 }
 
 # UDP loss placement, the same rule as the dashboard: per phase and receiving host,
-# unaccounted = lost - (that host's InErrors + backlog drops + rail-NIC rx drops), floored at 0.
+# unaccounted = lost - (that host's InErrors + backlog drops + rail-NIC drops), floored at 0. The kernel
+# also adds backlog drops to rx_dropped, so NIC = max(0, rx_dropped - backlog) + rx_out_of_buffer.
 # Files: ipmap (ip host rail), nicmap (host_nic host rail), UDP results, host counters, NIC drops.
 # -v t="iterN Ux" limits it to one phase. Prints: lost sent socket nic backlog unaccounted.
 UDP_ATTR_AWK='
@@ -705,9 +708,10 @@ f == 3 { if (/^### /) { split($2, a, ":"); split($3, b, ":"); ph = "iter" a[2] "
          if (!n) next
          split($1, s, ","); k = ph SUBSEP host[s[2]]; L[k] += x[1]; sent += x[2]; next }
 f == 4 { k = $1 " " $2 SUBSEP $3; SK[k] += $4; BK[k] += $7; next }
-f == 5 { k = $1 " " $2 SUBSEP nh[$3]; NK[k] += $4 + $5 }
-END { for (k in L) { lost += L[k]; sock += SK[k]; nic += NK[k]; back += BK[k]
-                     u = L[k] - SK[k] - NK[k] - BK[k]; if (u > 0) un += u }
+f == 5 { k = $1 " " $2 SUBSEP nh[$3]; DR[k] += $4; DO[k] += $5 }
+END { for (k in L) { nk = DR[k] - BK[k]; if (nk < 0) nk = 0; nk += DO[k]
+                     lost += L[k]; sock += SK[k]; nic += nk; back += BK[k]
+                     u = L[k] - SK[k] - nk - BK[k]; if (u > 0) un += u }
       printf "%d %d %d %d %d %d\n", lost, sent, sock, nic, back, un }'
 
 udp_attr() {  # [iterN Ux] -> "lost sent socket nic backlog unaccounted"
@@ -1122,7 +1126,7 @@ main() {
     # --- 6. iterations ---
     local RESULTS=$COLLECT_DIR/iperf3_results.txt DROP_TOTALS=$COLLECT_DIR/packet_drops.txt
     PATH_EXCL=$COLLECT_DIR/paths_excluded.txt
-    : > "$RESULTS"; : > "$DROP_TOTALS"; : > "$PATH_EXCL"
+    : > "$RESULTS"; : > "$DROP_TOTALS"; : > "$COLLECT_DIR/link_flaps.txt"; : > "$PATH_EXCL"
     ORDER=($(for k in "${ELIG[@]}"; do echo "$k ${T_HOST[$k]}"; done | sort -V -k2 | awk '{print $1}'))
     local FIRST_HOST=${T_HOST[${ORDER[0]}]}
     local n=${#ORDER[@]} p ck sk
@@ -1232,10 +1236,18 @@ main() {
         fi
         local iter_drops; iter_drops=$(compute_drops "$DROPS_PRE" "$DROPS_POST" "iter${ITER}")
         if [[ -n $iter_drops ]]; then
-            log "Drops during iteration $ITER:"; echo "$iter_drops" | column -t | sed 's/^/#   /' >&2
+            log "Drops during iteration $ITER:"; echo "$iter_drops" | awk '{NF--; print}' | column -t | sed 's/^/#   /' >&2
             echo "$iter_drops" >> "$DROP_TOTALS"
         else
             log "No drop counter increases in iteration $ITER ($(wc -l < "$DROPS_POST" | tr -d ' ') NICs read)"
+        fi
+        # a rail link that went down during the iteration: its runs measured a flap, not the fabric
+        local flaps; flaps=$(awk -v it="iter$ITER" 'NR == FNR {c[$1] = $6; next}
+            ($1 in c) && $6 ~ /^[0-9]+$/ && c[$1] ~ /^[0-9]+$/ && $6 > c[$1] {print it, $1, $2, $6 - c[$1]}' "$DROPS_PRE" "$DROPS_POST")
+        if [[ -n $flaps ]]; then
+            log "WARNING: rail links went down during iteration $ITER (host_nic ip carrier-down count):"
+            echo "$flaps" | cut -d' ' -f2- | column -t | sed 's/^/#   /' >&2
+            echo "$flaps" >> "$COLLECT_DIR/link_flaps.txt"
         fi
         echo
     done
@@ -1271,7 +1283,7 @@ main() {
             echo "  No iperf3 results collected."
         fi
         echo ""
-        echo "  Hosts tested: ${#ELIG[@]} | Rails unusable: $(awk 'NR > 1 {n += ($6 != "ok") + ($10 != "ok")} END {print n + 0}' "$COLLECT_DIR/rails.txt") (rails.txt) | Paths skipped: $(wc -l < "$PATH_EXCL" | tr -d ' ') (paths_excluded.txt)"
+        echo "  Hosts on the rails: ${#ELIG[@]}, with a result: $(grep 'Gbits/sec' "$RESULTS" | awk -F'[, ]+' 'NR==FNR {h[$1]=$2; next} {print h[$1]; print h[$2]}' "$WORK/ipmap" - | sort -u | grep -c .) | Rails unusable: $(awk 'NR > 1 {n += ($6 != "ok") + ($10 != "ok")} END {print n + 0}' "$COLLECT_DIR/rails.txt") (rails.txt) | TCP paths skipped: $(awk '$2 ~ /^[12]$/' "$PATH_EXCL" | wc -l | tr -d ' ') (paths_excluded.txt)"
         echo "  Runs with no result: $(grep -c ',ERROR' "$RESULTS")"
         if [[ $FS_UDP == 1 ]]; then
             echo ""

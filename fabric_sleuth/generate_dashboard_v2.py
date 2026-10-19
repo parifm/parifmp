@@ -1663,13 +1663,16 @@ def parse_tar_archive(filepath):
         p = l.split()
         if len(p) >= 7:
             hostc[(p[0], p[1], p[2])] = (int(p[3]), int(p[6]))
-    nicd = defaultdict(int)   # (iter, phase, host) -> rx drops + rx_oob on its rail NICs
+    # (iter, phase, host) -> rx drops / rx_oob on its rail NICs. The kernel adds softnet backlog drops
+    # to rx_dropped too, so NIC = max(0, rx drops - backlog) + rx_oob (same rule as the collector)
+    nicd, nico = defaultdict(int), defaultdict(int)
     nic_host = {f"{l.split()[0]}_{l.split()[1]}": l.split()[0]
                 for l in read_file('nic_diagnostics.txt').splitlines() if len(l.split()) >= 2}
     for l in read_file('udp_nic_drops.txt').splitlines():
         p = l.split()
         if len(p) >= 5 and p[2] in nic_host:
-            nicd[(p[0], p[1], nic_host[p[2]])] += int(p[3]) + int(p[4])
+            nicd[(p[0], p[1], nic_host[p[2]])] += int(p[3])
+            nico[(p[0], p[1], nic_host[p[2]])] += int(p[4])
     udp, it, ph = [], '', ''
     for line in read_file('iperf3_udp_results.txt').splitlines():
         mm = re.match(r'^###\s+iteration:(\d+)\s+phase:(\S+)', line)
@@ -1680,7 +1683,7 @@ def parse_tar_archive(filepath):
         if m:
             dst_host = host_of_ip.get(m.group(2), '')
             sock, back = hostc.get((it, ph, dst_host), (0, 0))
-            nic = nicd.get((it, ph, dst_host), 0)
+            nic = max(0, nicd.get((it, ph, dst_host), 0) - back) + nico.get((it, ph, dst_host), 0)
             lost, sent = int(m.group(5)), int(m.group(6))
             udp.append({'iter': it, 'phase': ph, 'src': m.group(1), 'dst': m.group(2),
                         'src_host': host_of_ip.get(m.group(1), ''), 'dst_host': dst_host,
@@ -2008,6 +2011,10 @@ def parse_tar_archive(filepath):
         notes.append(f"Drop counters read on {reads} of {meta.get('drop_nics_expected')} rail NICs in at least one iteration.")
     if data['lldp_info'] and all(l['switch'] == 'unknown' for l in data['lldp_info']):
         notes.append('No LLDP neighbours seen (lldpd not running, or the switches do not send LLDP): the switch view is empty.')
+    flaps = [l.split() for l in read_file('link_flaps.txt').splitlines() if len(l.split()) >= 4]
+    if flaps:
+        problems.append('Rail links went down during the run (their runs measured a flap, not the fabric): '
+                        + ', '.join(f'{f[1]} {f[0]} (+{f[3]})' for f in flaps))
     xr = meta.get('cross_rail')
     if xr == 'unrouted':
         notes.append('Rails not routed to each other: every A<->B path check failed on routing, no same-rail one did. '
