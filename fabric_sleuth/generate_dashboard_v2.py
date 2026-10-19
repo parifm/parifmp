@@ -240,6 +240,24 @@ def generate_html(data, output_path):
     needs_repair = total_ips - healthy_ips - functional_ips
 
     # Paths, rails and hosts the run could not test, with the reason
+    # Preflight card: swapped rails, cabling to the other rail's switch, MTU mismatch, gateways
+    preflight_html = ''
+    if data.get('anomalies') or data.get('gateways'):
+        gws = data.get('gateways', [])
+        gw_ok = sum(1 for g in gws if g[-1] == 'OK')
+        gw_direct = sum(1 for g in gws if g[-1] == 'DIRECT')
+        gw_bad = [g for g in gws if g[-1] not in ('OK', 'DIRECT')]
+        kinds = {'swapped_nics': 'Rail NICs swapped', 'rail_nic_overlap': 'Rail NIC names mixed',
+                 'lldp_wrong_rail': "Cabled to the other rail's switch", 'mtu_mismatch': 'MTU differs on a rail',
+                 'gateway_FAIL': 'Rail gateway not answering', 'gateway_MTU': 'Rail gateway answers small pings only'}
+        rows = ''.join(f"<tr><td>{escape(kinds.get(a[1], a[1]) if len(a) > 1 else '')}</td><td>{escape(a[0])}</td>"
+                       f"<td>{escape(a[2] if len(a) > 2 else '')}</td></tr>" for a in data.get('anomalies', []))
+        bad = len(data.get('anomalies', []))
+        preflight_html = f"""<div class="card mb-3"><div class="card-header">Preflight: rail layout and gateways |
+<b class="{'stat-bad' if bad else 'stat-good'}">{bad}</b> findings | gateways: {gw_ok} answered a full-MTU ping, {len(gw_bad)} failed, {gw_direct} rails on-link</div>
+<div class="card-body" style="max-height:300px; overflow-y:auto;">{'<p class="text-success mb-0">No rail swaps, cross-rail cabling, MTU differences or gateway failures found.</p>' if not bad else
+f'<table class="table table-sm table-striped"><thead><tr><th>Finding</th><th>Host / rail</th><th>Detail</th></tr></thead><tbody>{rows}</tbody></table>'}</div></div>"""
+
     no_drops_msg = ('<p class="text-warning mb-0">Drop counters were not read on this run: unknown, not zero.</p>'
                     if data.get('drops_unknown') else
                     '<p class="text-success mb-0">No packet drops detected during testing.</p>')
@@ -366,6 +384,7 @@ td.dt-row-num {{ color: #556; font-size: 0.8em; text-align: right; width: 30px; 
     </span>
 </div>
 {problems_html}
+{preflight_html}
 {not_tested_html}
 {udp_html}
 
@@ -1723,6 +1742,10 @@ def parse_tar_archive(filepath):
                     entry['diag']['diagnosis'] = 'High FEC correction count — marginal fiber or dirty connector'
             data['slow_ips'].append(entry)
     data['slow_ips'].sort(key=lambda x: x['avg'])
+
+    # Preflight findings (v2 collector): rail anomalies and rail gateways
+    data['anomalies'] = [l.split(None, 2) for l in read_file('rail_anomalies.txt').splitlines() if l.strip()]
+    data['gateways'] = [l.split() for l in read_file('gateways.txt').splitlines() if l.strip()]
 
     # Problems make the run fail loudly (red banner, exit 3); notes are shown, not failed on
     meta = data['metadata']

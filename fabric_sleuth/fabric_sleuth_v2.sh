@@ -307,6 +307,23 @@ for nic in "$@"; do
 done
 EOF
 
+# Rail gateways: rail_ip nic df_size peer... -> "DIRECT" or "GW <ip> OK|MTU|FAIL" per distinct gateway
+# that `ip route get <peer> from <rail_ip>` uses (routed fabrics: /31 or per-rail policy tables).
+read -r -d '' GW_SCRIPT <<'EOF'
+src=$1 nic=$2 size=$3; shift 3
+gws=""
+for p in "$@"; do
+    g=$(ip -o route get "$p" from "$src" 2>&1 | awk '{for (i = 1; i < NF; i++) if ($i == "via") {print $(i+1); exit}}')
+    [ -n "$g" ] && case " $gws " in *" $g "*) ;; *) gws="$gws $g" ;; esac
+done
+[ -z "$gws" ] && { echo "DIRECT"; exit 0; }
+for g in $gws; do
+    if out=$(ping -c2 -W1 -M do -s "$size" -I "$src" "$g" 2>&1); then echo "GW $g OK"
+    elif out=$(ping -c2 -W1 -I "$src" "$g" 2>&1); then echo "GW $g MTU"
+    else echo "GW $g FAIL"; fi
+done
+EOF
+
 # Path check: src_ip dst_ip src_nic df_size -> OK or a reason
 read -r -d '' PATH_SCRIPT <<'EOF'
 r=$(ip -o route get "$2" from "$1" 2>&1); r=${r%%$'\n'*}
@@ -389,6 +406,71 @@ rail_lookup() {
 }
 
 rail_ok() { [[ ${RSTATE[$1,$2]} == ok ]]; }
+rail_letter() { [[ $1 == 0 ]] && echo A || echo B; }
+
+# Swapped rails by NIC name (subnet mode): a host whose rail-A NIC is the name most hosts
+# use for rail B, and the reverse, has its IPs or cables swapped.
+rail_consistency() {
+    [[ $RAIL_MODE == cidr ]] || return 0
+    local maj k r; maj=$(for k in "${ELIG[@]}"; do for r in 0 1; do [[ ${RNIC[$k,$r]} != - ]] && echo "$r ${RNIC[$k,$r]}"; done; done |
+        awk '{c[$1 " " $2]++} END {for (x in c) {split(x, p, " "); if (c[x] > b[p[1]]) {b[p[1]] = c[x]; m[p[1]] = p[2]}} print m[0] " " m[1]}')
+    local ma=${maj% *} mb=${maj#* } n=0
+    [[ -n $ma && -n $mb && $ma != "$mb" ]] || return 0
+    for k in "${ELIG[@]}"; do
+        if [[ ${RNIC[$k,0]} == "$mb" && ${RNIC[$k,1]} == "$ma" ]]; then
+            echo "${T_HOST[$k]} swapped_nics rail A is on $mb and rail B on $ma, the reverse of most hosts (A=$ma, B=$mb): IPs or cables swapped" >> "$COLLECT_DIR/rail_anomalies.txt"; n=$(( n + 1 ))
+        elif [[ ${RNIC[$k,0]} == "$mb" || ${RNIC[$k,1]} == "$ma" ]]; then
+            echo "${T_HOST[$k]} rail_nic_overlap rail A on ${RNIC[$k,0]}, rail B on ${RNIC[$k,1]}; most hosts use A=$ma, B=$mb" >> "$COLLECT_DIR/rail_anomalies.txt"; n=$(( n + 1 ))
+        fi
+    done
+    (( n )) && { log "WARNING: $n hosts have rail NICs the other way round from most hosts:"; grep -E ' swapped_nics | rail_nic_overlap ' "$COLLECT_DIR/rail_anomalies.txt" | sed 's/^/#   /' | head -n 10 >&2; }
+    return 0
+}
+
+# Each usable rail's gateway(s) must answer a full-MTU no-fragment ping (routed rails only).
+gateway_check() {
+    local k r j
+    : > "$COLLECT_DIR/gateways.txt"
+    for k in "${ELIG[@]}"; do for r in 0 1; do
+        rail_ok $k $r || continue
+        local -a peers=()
+        for j in "${ELIG[@]}"; do [[ $j != "$k" ]] && rail_ok $j $r && peers+=("${RIP[$j,$r]}"); done
+        (( ${#peers[@]} )) || continue
+        throttle
+        ( out=$(rbash "${T_TARGET[$k]}" "${RIP[$k,$r]}" "${RNIC[$k,$r]}" $(( ${RMTU[$k,$r]:-1500} - 28 )) "${peers[@]}" <<<"$GW_SCRIPT" 2>&1)
+          while read -r line; do [[ -n $line ]] && echo "${T_HOST[$k]} $(rail_letter $r) ${RIP[$k,$r]} $line"; done <<<"${out:-SSH no output}" > "$WORK/gw.$k.$r" ) &
+    done; done
+    wait
+    cat "$WORK"/gw.* 2>&1 | grep -v 'No such file' | sort -V > "$COLLECT_DIR/gateways.txt"
+    local direct ok bad
+    direct=$(grep -c ' DIRECT$' "$COLLECT_DIR/gateways.txt"); ok=$(grep -c ' OK$' "$COLLECT_DIR/gateways.txt")
+    bad=$(grep -v -E ' (DIRECT|OK)$' "$COLLECT_DIR/gateways.txt")
+    log "Rail gateways: $ok answered a full-MTU no-fragment ping, $direct rails have no gateway (peers on-link)"
+    if [[ -n $bad ]]; then
+        log "WARNING: rail gateways that failed (MTU = answers only small pings):"; echo "$bad" | sed 's/^/#   /' >&2
+        echo "$bad" | awk '{print $1, "gateway_" $NF, "rail", $2, $3, "gateway", $5}' >> "$COLLECT_DIR/rail_anomalies.txt"
+    fi
+}
+
+# LLDP: a rail NIC whose switch most hosts reach on the other rail is cabled to the wrong rail.
+lldp_rail_check() {
+    local railmap=$WORK/railmap k r
+    for k in "${ELIG[@]}"; do for r in 0 1; do
+        [[ ${RNIC[$k,$r]} != - ]] && echo "${T_HOST[$k]} ${RNIC[$k,$r]} $(rail_letter $r)"
+    done; done > "$railmap"
+    awk 'FNR == 1 {f++}
+         f == 1 {rail[$1 " " $2] = $3; next}
+         $4 != "unknown" && (($1 " " $2) in rail) {n++; h[n] = $1; nic[n] = $2; sw[n] = $4; rl[n] = rail[$1 " " $2]; c[$4 " " rl[n]]++}
+         END {for (i = 1; i <= n; i++) {o = (rl[i] == "A") ? "B" : "A"
+                  if (c[sw[i] " " o] > c[sw[i] " " rl[i]])
+                      printf "%s lldp_wrong_rail rail %s NIC %s is cabled to %s, which %d other NICs reach on rail %s\n", h[i], rl[i], nic[i], sw[i], c[sw[i] " " o], o}}' \
+        "$railmap" "$1" > "$WORK/lldp_anom"
+    if [[ -s $WORK/lldp_anom ]]; then
+        log "WARNING: $(wc -l < "$WORK/lldp_anom" | tr -d ' ') rail NICs are cabled to a switch that serves the other rail (LLDP):"
+        sed 's/^/#   /' "$WORK/lldp_anom" | head -n 10 >&2
+        cat "$WORK/lldp_anom" >> "$COLLECT_DIR/rail_anomalies.txt"
+    fi
+}
 
 # round_pairs r: round r of the circle method over ROT (even length, "-" = bye).
 # ROT[0] stays put and the rest rotate one place per round, so no pair repeats
@@ -754,6 +836,7 @@ main() {
     else
         log "All rails on all ${#ELIG[@]} hosts have an address and link"
     fi
+    : > "$COLLECT_DIR/rail_anomalies.txt"   # preflight findings: host kind detail...
     # one MTU per rail expected; name the odd hosts (their paths fail the no-fragment check)
     local rr
     for rr in 0 1; do
@@ -761,7 +844,10 @@ main() {
             awk '{if (!($1 in n)) d++; n[$1]++; h[$1] = h[$1] " " $2} END {if (d < 2) exit; for (m in n) if (n[m] > b) {b = n[m]; mm = m}
                  printf "most at %s;", mm; for (m in n) if (m != mm) printf " %s on%s;", m, h[m]}')
         [[ -n $mt ]] && log "WARNING: rail $( [[ $rr == 0 ]] && echo A || echo B) MTUs differ: $mt paths across them fail the no-fragment check and are skipped"
+        [[ -n $mt ]] && echo "rail_$( [[ $rr == 0 ]] && echo A || echo B) mtu_mismatch $mt" >> "$COLLECT_DIR/rail_anomalies.txt"
     done
+    rail_consistency
+    gateway_check
 
     # --- 4. diagnostics ---
     log "Collecting NIC diagnostics..."
@@ -779,6 +865,7 @@ main() {
         grep -v '^@@' "$WORK/diag.$k" > "$RAW_DIR/${T_HOST[$k]}.txt"
     done
     log "Diagnostics: $(wc -l < "$NIC_DIAG" | tr -d ' ') NIC, $(wc -l < "$LLDP_DATA" | tr -d ' ') LLDP, $(wc -l < "$DRV_DATA" | tr -d ' ') driver lines"
+    lldp_rail_check "$LLDP_DATA"
 
     local LINE_GBPS=$FS_LINE_GBPS
     if [[ -z $LINE_GBPS ]]; then
