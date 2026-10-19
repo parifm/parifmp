@@ -843,7 +843,7 @@ $(document).ready(function() {{
     var slowContainer = document.getElementById('slowIpContainer');
     if (!slowData.length) {{ slowContainer.innerHTML = '<p class="text-success">All connections averaging &ge; {F} Gbps</p>'; }}
     else {{
-        var slowHtml = '<table class="table table-sm table-striped table-hover" id="slowIpTable"><thead><tr><th>#</th><th>Host</th><th>IP</th><th>Avg Gbps<small>expected {L}</small></th><th>Samples</th><th>NIC</th><th>Speed<small>expected {L}G</small></th><th>FEC Corrected<small>ideal 0</small></th><th>Diagnosis</th></tr></thead><tbody>';
+        var slowHtml = '<table class="table table-sm table-striped table-hover" id="slowIpTable"><thead><tr><th>#</th><th>Host</th><th>IP</th><th>Avg Gbps<small>expected {L}</small></th><th>Samples</th><th>NIC</th><th>Speed<small>expected {L}G</small></th><th>FEC Corrected Bits<small>lifetime, not a rate</small></th><th>Diagnosis</th></tr></thead><tbody>';
         slowData.forEach(function(r) {{
             var d = r.diag || {{}};
             var badge = r.avg >= {F} ? 'badge-ok' : r.avg >= {S} ? 'badge-slow' : 'badge-down';
@@ -1882,9 +1882,8 @@ def parse_tar_archive(filepath):
                 entry['diag']['nic'] = p[1]
                 entry['diag']['speed'] = p[3]
                 fec = _int(p[4])
+                # Lifetime count with no time base: 400G PAM4 links correct constantly, so no diagnosis from it
                 entry['diag']['fec'] = 'n/a' if fec is None else fec
-                if fec and fec > 1000000:
-                    entry['diag']['diagnosis'] = 'High FEC correction count — marginal fiber or dirty connector'
             data['slow_ips'].append(entry)
     data['slow_ips'].sort(key=lambda x: x['avg'])
 

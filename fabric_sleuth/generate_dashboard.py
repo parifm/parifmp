@@ -420,7 +420,7 @@ td.dt-row-num {{ color: #556; font-size: 0.8em; text-align: right; width: 30px; 
     {'<div class="row g-3 mt-1"><div class="col-12"><div class="card"><div class="card-header text-danger" style="display:flex; justify-content:space-between; align-items:center;">Packet Drops During Testing (' + str(nics_with_drops) + ' NICs affected)<button class="btn btn-sm btn-outline-info" onclick="downloadTableCsv(&#39;dropsTable&#39;,&#39;packet_drops.csv&#39;)">Download CSV</button></div><div class="card-body"><table class="table table-sm table-striped table-hover" id="dropsTable"><thead><tr><th>#</th><th>Host/NIC</th><th>IP</th><th>Rx Dropped<small>ideal 0</small></th><th>Tx Dropped<small>ideal 0</small></th><th>Rx OOB<small>ideal 0</small></th><th>Phases</th></tr></thead><tbody>' + "".join(f"<tr><td></td><td>{d['host_nic']}</td><td>{d['ip']}</td><td>{d['rx_drop']:,}</td><td>{d['tx_drop']:,}</td><td>{d['rx_oob']:,}</td><td>{d['phases']}</td></tr>" for d in drops) + '</tbody></table></div></div></div></div>' if drops else '<div class="row g-3 mt-1"><div class="col-12"><div class="card"><div class="card-header">Packet Drops</div><div class="card-body"><p class="text-success mb-0">No packet drops detected during testing.</p></div></div></div></div>'}
     <div class="row g-3 mt-1">
         <div class="col-md-6">
-            <div class="card"><div class="card-header">Top 50 FEC Corrected Bits</div>
+            <div class="card"><div class="card-header">Top 50 FEC Corrected Bits (cumulative since the counters last reset; not a rate)</div>
             <div class="card-body"><div id="fecChart" style="height:400px;"></div></div></div>
         </div>
         <div class="col-md-6">
@@ -747,7 +747,7 @@ $(document).ready(function() {{
     var slowContainer = document.getElementById('slowIpContainer');
     if (!slowData.length) {{ slowContainer.innerHTML = '<p class="text-success">All connections averaging &ge; {F} Gbps</p>'; }}
     else {{
-        var slowHtml = '<table class="table table-sm table-striped table-hover" id="slowIpTable"><thead><tr><th>#</th><th>Host</th><th>IP</th><th>Avg Gbps<small>expected {L}</small></th><th>Samples</th><th>NIC</th><th>Speed<small>expected {L}G</small></th><th>FEC Corrected<small>ideal 0</small></th><th>Diagnosis</th></tr></thead><tbody>';
+        var slowHtml = '<table class="table table-sm table-striped table-hover" id="slowIpTable"><thead><tr><th>#</th><th>Host</th><th>IP</th><th>Avg Gbps<small>expected {L}</small></th><th>Samples</th><th>NIC</th><th>Speed<small>expected {L}G</small></th><th>FEC Corrected Bits<small>lifetime, not a rate</small></th><th>Diagnosis</th></tr></thead><tbody>';
         slowData.forEach(function(r) {{
             var d = r.diag || {{}};
             var badge = r.avg >= {F} ? 'badge-ok' : r.avg >= {S} ? 'badge-slow' : 'badge-down';
@@ -1703,9 +1703,8 @@ def parse_tar_archive(filepath):
                 entry['diag']['nic'] = p[1]
                 entry['diag']['speed'] = p[3]
                 fec = _int(p[4])
+                # Lifetime count with no time base: 400G PAM4 links correct constantly, so no diagnosis from it
                 entry['diag']['fec'] = 'n/a' if fec is None else fec
-                if fec and fec > 1000000:
-                    entry['diag']['diagnosis'] = 'High FEC correction count — marginal fiber or dirty connector'
             data['slow_ips'].append(entry)
     data['slow_ips'].sort(key=lambda x: x['avg'])
 
