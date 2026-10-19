@@ -313,7 +313,7 @@ counters on {len(exposed)} of {len(fr)} rail NICs | <b class="{'stat-bad' if cnt
         compare_html = f"""<div class="card mb-3"><div class="card-header">Compared with the run of {escape(cmp_['old_ts'])} ({escape(cmp_['old_label'])}):
 <b>{len(cmp_['changes'])}</b> NIC changes, {len(cmp_['down_added'])} newly down IPs, {len(cmp_['down_cleared'])} recovered</div>
 <div class="card-body" style="max-height:360px; overflow-y:auto;">{downs}
-<p class="mb-1" style="font-size:0.8rem; color:#8899aa;">Per rail NIC (host + NIC), since pairings differ between runs. Throughput changes of 10% or more are listed; a lifetime counter that went down was reset (reboot or driver reload).</p>
+<p class="mb-1" style="font-size:0.8rem; color:#8899aa;">Per rail NIC (host + NIC), since pairings differ between runs. Throughput is compared per direction (sent, received); a drop seen only as received usually follows a drop on the sending NIC listed with it. Changes of 10% or more are listed; a lifetime counter that went down was reset (reboot or driver reload).</p>
 {'<p class="text-success mb-0">No NIC-level changes.</p>' if not rows else f'<table class="table table-sm table-striped"><thead><tr><th>Host</th><th>NIC</th><th>What</th><th>Before</th><th>Now</th></tr></thead><tbody>{rows}</tbody></table>'}</div></div>"""
 
     no_drops_msg = ('<p class="text-warning mb-0">Drop counters were not read on this run: unknown, not zero.</p>'
@@ -1497,11 +1497,14 @@ def nic_view(d):
             key = f"{p[0]}_{p[1]}"
             ip_nic[p[2]] = key
             v[key] = {'host': p[0], 'nic': p[1], 'ip': p[2], 'speed': p[3], 'fec': _int(p[4]), 'link_down': _int(p[9]),
-                      'gbps': [], 'drops': 0}
-    for r in d['iperf_results']:
-        for ip in (r['src'], r['dst']):
-            if ip in ip_nic:
-                v[ip_nic[ip]]['gbps'].append(r['gbps'])
+                      'sent': [], 'recv': [], 'drops': 0}
+    for r in d['iperf_results']:   # per direction: a shaped sender also lowers its receivers' averages
+        if r['src'] in ip_nic:
+            v[ip_nic[r['src']]]['sent'].append(r['gbps'])
+        if r['dst'] in ip_nic:
+            v[ip_nic[r['dst']]]['recv'].append(r['gbps'])
+            if r['src'] in ip_nic:
+                v[ip_nic[r['dst']]].setdefault('from', set()).add(ip_nic[r['src']])
     for x in d['driver_info']:
         k = f"{x['host']}_{x['nic']}"
         if k in v:
@@ -1517,8 +1520,9 @@ def nic_view(d):
         if f['nic'] in v:
             v[f['nic']]['fec_status'] = f['status']
     for k in v:
-        g = v[k]['gbps']
-        v[k]['avg'] = sum(g) / len(g) if g else None
+        for side in ('sent', 'recv'):
+            g = v[k][side]
+            v[k][side + '_avg'] = sum(g) / len(g) if g else None
     return v
 
 
@@ -1535,11 +1539,12 @@ def compare_runs(new, old):
         if not n:
             ch.append((host, nic, 'missing from this run', o['ip'], ''))
             continue
-        if n['avg'] is not None and o['avg'] is not None and o['avg'] > 0 and abs(n['avg'] - o['avg']) >= 0.1 * o['avg']:
-            ch.append((host, nic, 'throughput', f"{o['avg']:.1f} Gbps", f"{n['avg']:.1f} Gbps ({100 * (n['avg'] - o['avg']) / o['avg']:+.0f}%)"))
-        elif (n['avg'] is None) != (o['avg'] is None):
-            ch.append((host, nic, 'throughput', 'no result' if o['avg'] is None else f"{o['avg']:.1f} Gbps",
-                       'no result' if n['avg'] is None else f"{n['avg']:.1f} Gbps"))
+        for side, label in (('sent_avg', 'throughput sent'), ('recv_avg', 'throughput received')):
+            a, b = o[side], n[side]
+            if a is not None and b is not None and a > 0 and abs(b - a) >= 0.1 * a:
+                ch.append((host, nic, label, f"{a:.1f} Gbps", f"{b:.1f} Gbps ({100 * (b - a) / a:+.0f}%)"))
+            elif (a is None) != (b is None):
+                ch.append((host, nic, label, 'no result' if a is None else f"{a:.1f} Gbps", 'no result' if b is None else f"{b:.1f} Gbps"))
         if n['speed'] != o['speed']:
             ch.append((host, nic, 'link speed', o['speed'], n['speed']))
         for key, label in (('fec', 'FEC corrected (lifetime)'), ('link_down', 'link down events')):
@@ -1551,6 +1556,13 @@ def compare_runs(new, old):
                 ch.append((host, nic, label, o[key], n[key]))
         if n['drops'] != o['drops']:
             ch.append((host, nic, 'packet drops in run', f"{o['drops']:,}", f"{n['drops']:,}"))
+    # a received-only drop that follows a flagged sender: say which (the receiver is probably fine)
+    sent_down = {f"{h}_{n}" for h, n, what, a, b in ch if what == 'throughput sent' and '(-' in b}
+    for i, (h, n, what, a, b) in enumerate(ch):
+        if what == 'throughput received' and '(-' in b:
+            senders = sorted(nv.get(f"{h}_{n}", {}).get('from', set()) & sent_down)
+            if senders and f"{h}_{n}" not in sent_down:
+                ch[i] = (h, n, what, a, b + ' - follows ' + ', '.join(s.replace('_', ' ', 1) for s in senders) + ' (sent less)')
     added = sorted(set(new['down_ips']) - set(old['down_ips']))
     cleared = sorted(set(old['down_ips']) - set(new['down_ips']))
     return {'changes': ch, 'down_added': added, 'down_cleared': cleared,
