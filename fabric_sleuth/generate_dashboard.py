@@ -1527,7 +1527,8 @@ def parse_tar_archive(filepath):
         data['line_rate_src'] = 'most common NIC speed'
     else:
         line_gbps, data['line_rate_src'] = 0, 'best run seen (no NIC speed data)'
-    # per-rail line rate (rails can run at different speeds); older collectors give one rate for both
+    # per-rail line rate only when the collector says so (FS_LINE_GBPS=A,B); otherwise the faster rail's
+    # most common speed for both, so a rail that came up slow everywhere shows as slow
     ip_rail = {}
     for l in read_file('rails.txt').splitlines()[1:]:
         q = l.split()
@@ -1541,6 +1542,7 @@ def parse_tar_archive(filepath):
         rail_rate[r] = int(v) if v.isdigit() else (_mode(rs) if rs and not lr.isdigit() else line_gbps)
     if line_gbps and not lr.isdigit():
         line_gbps = max(rail_rate.values())
+        rail_rate = {r: line_gbps for r in rail_rate}
     data['ip_rail'], data['rail_rate'] = ip_rail, rail_rate
     line_speed = f'{line_gbps * 1000}Mb/s'
 

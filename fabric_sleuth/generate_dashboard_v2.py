@@ -1706,7 +1706,8 @@ def parse_tar_archive(filepath):
         data['line_rate_src'] = 'most common NIC speed'
     else:
         line_gbps, data['line_rate_src'] = 0, 'best run seen (no NIC speed data)'
-    # per-rail line rate (rails can run at different speeds); older collectors give one rate for both
+    # per-rail line rate only when the collector says so (FS_LINE_GBPS=A,B); otherwise the faster rail's
+    # most common speed for both, so a rail that came up slow everywhere shows as slow
     ip_rail = {}
     for l in read_file('rails.txt').splitlines()[1:]:
         q = l.split()
@@ -1720,6 +1721,7 @@ def parse_tar_archive(filepath):
         rail_rate[r] = int(v) if v.isdigit() else (_mode(rs) if rs and not lr.isdigit() else line_gbps)
     if line_gbps and not lr.isdigit():
         line_gbps = max(rail_rate.values())
+        rail_rate = {r: line_gbps for r in rail_rate}
     data['ip_rail'], data['rail_rate'] = ip_rail, rail_rate
     line_speed = f'{line_gbps * 1000}Mb/s'
 
@@ -2006,6 +2008,13 @@ def parse_tar_archive(filepath):
         notes.append(f"Drop counters read on {reads} of {meta.get('drop_nics_expected')} rail NICs in at least one iteration.")
     if data['lldp_info'] and all(l['switch'] == 'unknown' for l in data['lldp_info']):
         notes.append('No LLDP neighbours seen (lldpd not running, or the switches do not send LLDP): the switch view is empty.')
+    xr = meta.get('cross_rail')
+    if xr == 'unrouted':
+        notes.append('Rails not routed to each other: every A<->B path check failed on routing, no same-rail one did. '
+                     'Either separate fabrics by design (rerun with FS_CROSS_RAIL=0) or inter-rail routing missing on '
+                     'every host; the skipped A->B paths count until the operator says which.')
+    elif xr == 'off':
+        notes.append('Cross-rail phase (A->B) not run: FS_CROSS_RAIL=0 (operator: rails are separate fabrics).')
     if 'coverage' not in meta:
         notes.append('Archive from a collector without coverage counts (v1 or earlier): only result and iteration checks apply.')
     data['problems'], data['notes'] = problems, notes

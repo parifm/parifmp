@@ -44,6 +44,10 @@ Optional (default)
   FS_MESH=1        before load, ping every tested host's rail IPs from every other one's (same rail and
                    cross-rail; tested hosts only, so other clusters on shared subnets are never
                    probed). Failures go to mesh_failures.txt and the Preflight card.
+  FS_CROSS_RAIL=0  the rails are separate fabrics by design: skip the cross-rail phase (A->B) and
+                   leave it out of the coverage count. Default: test it; unrouted A<->B paths count
+                   as skipped (PARTIAL), since missing inter-rail routes can be the fault. When every
+                   A<->B check fails on routing and no same-rail one does, the log says so.
   FS_PORT          iperf3 port (5201)
   FS_SSH_USER      ssh user; non-root runs remote steps with sudo -n (root)
   FS_SSH_PARALLEL  ssh sessions at once for sweep and collection (64)
@@ -51,8 +55,9 @@ Optional (default)
   FS_MAX_TARGETS   refuse to expand FS_HOSTS beyond this (4096)
   FS_LABEL         name in the report and tarball (first tested hostname)
   FS_OUT_DIR       where the tarball goes (.)
-  FS_LINE_GBPS     link speed for OK/SLOW cut-offs, both rails (per rail: its most common
-                   NIC speed, the higher one on a tie)
+  FS_LINE_GBPS     link speed for OK/SLOW cut-offs: N for both rails, or A,B when the rails
+                   differ by design (e.g. 100,50). Default: the faster rail's most common NIC
+                   speed for both, so a rail that came up slow everywhere shows as slow
   FS_OK_PCT        OK at or above this % of link speed (75)
   FS_SLOW_PCT      SLOW at or above this %, CRITICAL below (50)
   FS_BUSY_CHECK    command run on each host before any load; exit 0 = host is in
@@ -717,6 +722,7 @@ udp_phases() {
     collect_counters "$UDPHOST_SCRIPT" "$a.host"; collect_drops "$a.nic"
     for u in 1 2; do
         PHASE=U$u; PHASE_OUT=$WORK/phase.$ITER.$PHASE; : > "$PHASE_OUT"
+        if [[ $u == 2 && $CROSS != on ]]; then log "Phase U2: skipped (cross-rail $CROSS)"; continue; fi
         [[ $u == 1 ]] && log "Phase U1: UDP A->A and B->B at once (-b 0)" || log "Phase U2: UDP A->B both directions at once (-b 0)"
         echo "### iteration:${ITER} phase:${PHASE}" >> "$UDP_RESULTS"
         for (( p = 0; p < ${#PC[@]}; p++ )); do
@@ -826,12 +832,14 @@ main() {
     : "${FS_UDP_DURATION:=$FS_DURATION}"
     [[ $FS_UDP == 0 || $FS_UDP == 1 ]] || die "FS_UDP must be 0 or 1, got '$FS_UDP'"
     [[ $FS_MESH == 0 || $FS_MESH == 1 ]] || die "FS_MESH must be 0 or 1, got '$FS_MESH'"
+    [[ -z $FS_CROSS_RAIL || $FS_CROSS_RAIL == 0 || $FS_CROSS_RAIL == 1 ]] || die "FS_CROSS_RAIL must be 0 or 1, got '$FS_CROSS_RAIL'"
+    [[ -z $FS_CROSS_RAIL ]] && FS_CROSS_RAIL=1
     local v
     for v in FS_DURATION FS_UDP_DURATION FS_ITER FS_STREAMS FS_PORT FS_SSH_PARALLEL FS_SSH_RETRY_PARALLEL FS_MAX_TARGETS FS_OK_PCT FS_SLOW_PCT; do
         [[ ${!v} =~ ^[0-9]+$ ]] && (( ${!v} > 0 )) || die "$v must be a positive integer, got '${!v}'"
     done
     (( FS_STREAMS >= 2 )) || die "FS_STREAMS must be >= 2 (iperf3 prints no [SUM] line for one stream)"
-    [[ -z $FS_LINE_GBPS || $FS_LINE_GBPS =~ ^[0-9]+$ ]] || die "FS_LINE_GBPS must be an integer"
+    [[ -z $FS_LINE_GBPS || $FS_LINE_GBPS =~ ^[1-9][0-9]*(,[1-9][0-9]*)?$ ]] || die "FS_LINE_GBPS must be an integer (both rails) or A,B integers, got '$FS_LINE_GBPS'"
     [[ -z $FS_EXPECT_HOSTS || $FS_EXPECT_HOSTS =~ ^[1-9][0-9]*$ ]] || die "FS_EXPECT_HOSTS must be a positive integer"
     [[ -z $FS_TOS || ( $FS_TOS =~ ^[0-9]{1,3}$ && 10#$FS_TOS -le 255 ) ]] || die "FS_TOS must be 0-255 (decimal), got '$FS_TOS'"
     [[ -n $FS_TOS ]] && FS_TOS=$(( 10#$FS_TOS ))
@@ -1050,15 +1058,18 @@ main() {
     log "Diagnostics: $(wc -l < "$NIC_DIAG" | tr -d ' ') NIC, $(wc -l < "$LLDP_DATA" | tr -d ' ') LLDP, $(wc -l < "$DRV_DATA" | tr -d ' ') driver lines"
     lldp_rail_check "$LLDP_DATA"
 
-    # line rate per rail (rails can differ, e.g. 100G RDMA + 50G); a rail with no speed takes the other's
-    local LINE_A=$FS_LINE_GBPS LINE_B=$FS_LINE_GBPS LINE_GBPS k
+    # line rate: per rail only when declared (FS_LINE_GBPS=A,B); otherwise the faster rail's most common
+    # speed for both, so a whole rail that came up slow is not judged against itself
+    local LINE_A=${FS_LINE_GBPS%,*} LINE_B=${FS_LINE_GBPS#*,} LINE_GBPS k MODE_A MODE_B
     for k in "${ELIG[@]}"; do echo "${RIP[$k,0]} A"; echo "${RIP[$k,1]} B"; done > "$WORK/iprail"
     if [[ -z $FS_LINE_GBPS ]]; then
-        read -r LINE_A LINE_B <<<"$(awk 'NR == FNR {rail[$1] = $2; next}
+        read -r MODE_A MODE_B <<<"$(awk 'NR == FNR {rail[$1] = $2; next}
             ($3 in rail) && $4 ~ /^[0-9]+Mb\/s$/ {s = $4; sub(/Mb\/s/, "", s); n[rail[$3] " " s / 1000]++}
             END {for (k in n) {split(k, p, " "); r = p[1]; v = p[2] + 0
                      if (n[k] > c[r] || (n[k] == c[r] && v > m[r])) {c[r] = n[k]; m[r] = v}}
                  a = ("A" in m) ? m["A"] : m["B"]; b = ("B" in m) ? m["B"] : a; print a, b}' "$WORK/iprail" "$NIC_DIAG")"
+        LINE_A=$(( ${MODE_A:-0} > ${MODE_B:-0} ? ${MODE_A:-0} : ${MODE_B:-0} )); (( LINE_A )) || LINE_A=; LINE_B=$LINE_A
+        [[ -n $MODE_A && $MODE_A != "$MODE_B" ]] && log "WARNING: rails run at different speeds (most NICs: rail A ${MODE_A}G, rail B ${MODE_B}G): both judged at ${LINE_A}G. If that is by design, set FS_LINE_GBPS=$MODE_A,$MODE_B"
     fi
     LINE_GBPS=$(( ${LINE_A:-0} > ${LINE_B:-0} ? ${LINE_A:-0} : ${LINE_B:-0} )); (( LINE_GBPS )) || LINE_GBPS=
     if [[ -n $LINE_GBPS ]]; then
@@ -1137,10 +1148,14 @@ main() {
         : > "$UDP_RESULTS"; : > "$COLLECT_DIR/udp_host_counters.txt"; : > "$COLLECT_DIR/udp_nic_drops.txt"
         log "UDP pass on: phases U1/U2 after the TCP phases, ${FS_UDP_DURATION}s each, no rate cap"
     fi
+    # cross-rail phase: on, or off only when the operator says the rails are separate fabrics
+    CROSS=on; CROSS_UNROUTED=0; [[ $FS_CROSS_RAIL == 0 ]] && { CROSS=off; log "Cross-rail phase off (FS_CROSS_RAIL=0): A->B is not tested"; }
+    local cross_decided=; [[ $CROSS == on ]] || cross_decided=1
     for (( ITER = 1; ITER <= FS_ITER; ITER++ )); do
         round_pairs $(( (ITER - 1) % rounds ))
         lock_all touch
-        PATHS_PLANNED=$(( PATHS_PLANNED + 4 * ${#PC[@]} ))
+        local per=4; [[ $CROSS == on ]] || per=2
+        PATHS_PLANNED=$(( PATHS_PLANNED + per * ${#PC[@]} ))
         log "============ Iteration $ITER of $FS_ITER (${#PC[@]} pairs) ============"
         [[ -n $SITOUT ]] && log "Sits out this iteration (odd host count): ${T_HOST[$SITOUT]}"
         for (( p = 0; p < ${#PC[@]}; p++ )); do echo "$ITER ${T_HOST[${PC[p]}]} ${T_HOST[${PS[p]}]}"; done >> "$COLLECT_DIR/pairs.txt"
@@ -1148,11 +1163,20 @@ main() {
         for (( p = 0; p < ${#PC[@]}; p++ )); do
             ck=${PC[p]}; sk=${PS[p]}
             check_path p1a_$p $ck 0 $sk 0; check_path p1b_$p $sk 1 $ck 1
-            check_path p2a_$p $ck 0 $sk 1; check_path p2b_$p $sk 0 $ck 1
+            [[ $CROSS == on ]] && { check_path p2a_$p $ck 0 $sk 1; check_path p2b_$p $sk 0 $ck 1; }
         done
         wait
-        local bad; bad=$(grep -Lx OK "$PATHS"/* | wc -l | tr -d ' ')
-        log "Path checks (egress route, ping, MTU no-fragment): $(( ${#PC[@]} * 4 - bad )) OK, $bad excluded"
+        if [[ -z $cross_decided && ${#PC[@]} -gt 0 ]]; then
+            cross_decided=1
+            local xn xr sr
+            xn=$(ls "$PATHS" | grep -c '^p2'); xr=$(cat "$PATHS"/p2* | grep -c '^ROUTE'); sr=$(cat "$PATHS"/p1* | grep -c '^ROUTE')
+            if (( xn > 0 && xr == xn && sr == 0 )); then
+                CROSS_UNROUTED=1   # still counted: a site missing its inter-rail routes looks the same
+                log "WARNING: rails are not routed to each other (all $xn A<->B path checks failed on routing, no same-rail one did): either separate fabrics by design (rerun with FS_CROSS_RAIL=0) or inter-rail routing missing on every host. The skips count until you say which."
+            fi
+        fi
+        local bad nchk; bad=$(grep -Lx OK "$PATHS"/* | wc -l | tr -d ' '); nchk=$(ls "$PATHS" | wc -l | tr -d ' ')
+        log "Path checks (egress route, ping, MTU no-fragment): $(( nchk - bad )) OK, $bad excluded"
 
         local DROPS_PRE=$WORK/drops_pre DROPS_POST=$WORK/drops_post
         collect_drops "$DROPS_PRE"
@@ -1160,6 +1184,7 @@ main() {
         collect_counters "$FEC_SCRIPT" "$WORK/fec_pre"; local fec_t0; fec_t0=$(date +%s)
         for PHASE in 1 2; do
             PHASE_OUT=$WORK/phase.$ITER.$PHASE; : > "$PHASE_OUT"
+            if [[ $PHASE == 2 && $CROSS != on ]]; then log "Phase 2: skipped (cross-rail $CROSS)"; continue; fi
             [[ $PHASE == 1 ]] && log "Phase 1: A->A and B->B at once" || log "Phase 2: A->B both directions at once"
             echo "### iteration:${ITER} phase:${PHASE}" >> "$RESULTS"
             for (( p = 0; p < ${#PC[@]}; p++ )); do
@@ -1192,7 +1217,7 @@ main() {
                     p = substr(l, RSTART, RLENGTH); gsub(/[^0-9]/, "", p); r = ($2 in rail) ? rail[$2] : "?"
                     b[r " " p] += $4; n++ }
                 END { for (r = 1; r <= 3; r++) { R = substr("AB?", r, 1); t = ""
-                          for (p = 0; p <= 7; p++) if ((R " " p) in b) t = t sprintf(" prio%d %.1fGB", p, b[R " " p] / 1e9)
+                          for (p = 0; p <= 7; p++) if ((R " " p) in b) t = t sprintf(" prio%d %s", p, b[R " " p] < 5e7 ? "<0.1GB" : sprintf("%.1fGB", b[R " " p] / 1e9))
                           if (t != "") printf "rail %s:%s  ", R, t }
                       if (!n) printf "no per-priority byte counters" }' "$WORK/nicmap" "$WORK/prio_delta")"
             awk 'tolower($3) !~ /byte|packet/ || $3 ~ /^rdma:/' "$WORK/prio_delta" | sort -k4 -rn > "$WORK/prio_events"
@@ -1282,6 +1307,8 @@ main() {
     elif (( hosts_tested >= expect && paths_ok >= PATHS_PLANNED )); then coverage=COMPLETE; cov_rc=0
     else coverage=PARTIAL; cov_rc=3; fi
     local RESULT_LINE="RESULT coverage=$coverage hosts=$hosts_tested/$expect paths=$paths_ok/$PATHS_PLANNED skipped=$skipped no_result=$noresult"
+    [[ $CROSS == on ]] || RESULT_LINE+=" cross_rail=$CROSS"
+    (( CROSS_UNROUTED )) && RESULT_LINE+=" cross_rail=unrouted"
     (( INPUT_RANGES )) && [[ -z $FS_EXPECT_HOSTS ]] && RESULT_LINE+=" (hosts expected = hosts found on the rails; set FS_EXPECT_HOSTS to check for missing ones)"
 
     local ts; ts=$(date -u +%Y%m%dT%H%M%SZ)
@@ -1315,6 +1342,7 @@ main() {
         echo "hosts_expected=$expect"
         echo "hosts_tested=$hosts_tested"
         echo "paths_planned=$PATHS_PLANNED"
+        echo "cross_rail=$( (( CROSS_UNROUTED )) && echo unrouted || echo "$CROSS")"
         echo "paths_ok=$paths_ok"
         echo "drop_nics_read_min=$DROP_READS_MIN"
         echo "drop_nics_expected=$(( ${#ELIG[@]} * 2 ))"

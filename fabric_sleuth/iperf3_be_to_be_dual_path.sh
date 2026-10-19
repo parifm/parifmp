@@ -42,8 +42,9 @@ Optional (default)
   FS_MAX_TARGETS   refuse to expand FS_HOSTS beyond this (4096)
   FS_LABEL         name in the report and tarball (first tested hostname)
   FS_OUT_DIR       where the tarball goes (.)
-  FS_LINE_GBPS     link speed for OK/SLOW cut-offs, both rails (per rail: its most common
-                   NIC speed, the higher one on a tie)
+  FS_LINE_GBPS     link speed for OK/SLOW cut-offs: N for both rails, or A,B when the rails
+                   differ by design (e.g. 100,50). Default: the faster rail's most common NIC
+                   speed for both, so a rail that came up slow everywhere shows as slow
   FS_OK_PCT        OK at or above this % of link speed (75)
   FS_SLOW_PCT      SLOW at or above this %, CRITICAL below (50)
   FS_BUSY_CHECK    command run on each host before any load; exit 0 = host is in
@@ -583,7 +584,7 @@ main() {
         [[ ${!v} =~ ^[0-9]+$ ]] && (( ${!v} > 0 )) || die "$v must be a positive integer, got '${!v}'"
     done
     (( FS_STREAMS >= 2 )) || die "FS_STREAMS must be >= 2 (iperf3 prints no [SUM] line for one stream)"
-    [[ -z $FS_LINE_GBPS || $FS_LINE_GBPS =~ ^[0-9]+$ ]] || die "FS_LINE_GBPS must be an integer"
+    [[ -z $FS_LINE_GBPS || $FS_LINE_GBPS =~ ^[1-9][0-9]*(,[1-9][0-9]*)?$ ]] || die "FS_LINE_GBPS must be an integer (both rails) or A,B integers, got '$FS_LINE_GBPS'"
     [[ -z $FS_TOS || ( $FS_TOS =~ ^[0-9]{1,3}$ && 10#$FS_TOS -le 255 ) ]] || die "FS_TOS must be 0-255 (decimal), got '$FS_TOS'"
     [[ -n $FS_TOS ]] && FS_TOS=$(( 10#$FS_TOS ))
 
@@ -771,15 +772,18 @@ main() {
     done
     log "Diagnostics: $(wc -l < "$NIC_DIAG" | tr -d ' ') NIC, $(wc -l < "$LLDP_DATA" | tr -d ' ') LLDP, $(wc -l < "$DRV_DATA" | tr -d ' ') driver lines"
 
-    # line rate per rail (rails can differ, e.g. 100G RDMA + 50G); a rail with no speed takes the other's
-    local LINE_A=$FS_LINE_GBPS LINE_B=$FS_LINE_GBPS LINE_GBPS k
+    # line rate: per rail only when declared (FS_LINE_GBPS=A,B); otherwise the faster rail's most common
+    # speed for both, so a whole rail that came up slow is not judged against itself
+    local LINE_A=${FS_LINE_GBPS%,*} LINE_B=${FS_LINE_GBPS#*,} LINE_GBPS k MODE_A MODE_B
     for k in "${ELIG[@]}"; do echo "${RIP[$k,0]} A"; echo "${RIP[$k,1]} B"; done > "$WORK/iprail"
     if [[ -z $FS_LINE_GBPS ]]; then
-        read -r LINE_A LINE_B <<<"$(awk 'NR == FNR {rail[$1] = $2; next}
+        read -r MODE_A MODE_B <<<"$(awk 'NR == FNR {rail[$1] = $2; next}
             ($3 in rail) && $4 ~ /^[0-9]+Mb\/s$/ {s = $4; sub(/Mb\/s/, "", s); n[rail[$3] " " s / 1000]++}
             END {for (k in n) {split(k, p, " "); r = p[1]; v = p[2] + 0
                      if (n[k] > c[r] || (n[k] == c[r] && v > m[r])) {c[r] = n[k]; m[r] = v}}
                  a = ("A" in m) ? m["A"] : m["B"]; b = ("B" in m) ? m["B"] : a; print a, b}' "$WORK/iprail" "$NIC_DIAG")"
+        LINE_A=$(( ${MODE_A:-0} > ${MODE_B:-0} ? ${MODE_A:-0} : ${MODE_B:-0} )); (( LINE_A )) || LINE_A=; LINE_B=$LINE_A
+        [[ -n $MODE_A && $MODE_A != "$MODE_B" ]] && log "WARNING: rails run at different speeds (most NICs: rail A ${MODE_A}G, rail B ${MODE_B}G): both judged at ${LINE_A}G. If that is by design, set FS_LINE_GBPS=$MODE_A,$MODE_B"
     fi
     LINE_GBPS=$(( ${LINE_A:-0} > ${LINE_B:-0} ? ${LINE_A:-0} : ${LINE_B:-0} )); (( LINE_GBPS )) || LINE_GBPS=
     if [[ -n $LINE_GBPS ]]; then
@@ -870,6 +874,10 @@ main() {
         wait
         local bad; bad=$(grep -Lx OK "$PATHS"/* | wc -l | tr -d ' ')
         log "Path checks (egress route, ping, MTU no-fragment): $(( ${#PC[@]} * 4 - bad )) OK, $bad excluded"
+        if (( ITER == 1 && ${#PC[@]} )); then   # separate fabrics: every A<->B check fails on routing, no same-rail one does
+            local xr sr; xr=$(cat "$PATHS"/p2* | grep -c '^ROUTE'); sr=$(cat "$PATHS"/p1* | grep -c '^ROUTE')
+            (( xr == 2 * ${#PC[@]} && sr == 0 )) && log "WARNING: rails are not routed to each other (all $xr A<->B path checks failed on routing, no same-rail one did): either separate fabrics by design or inter-rail routing missing on every host"
+        fi
 
         local DROPS_PRE=$WORK/drops_pre DROPS_POST=$WORK/drops_post
         collect_drops "$DROPS_PRE"
@@ -904,7 +912,7 @@ main() {
                     p = substr(l, RSTART, RLENGTH); gsub(/[^0-9]/, "", p); r = ($2 in rail) ? rail[$2] : "?"
                     b[r " " p] += $4; n++ }
                 END { for (r = 1; r <= 3; r++) { R = substr("AB?", r, 1); t = ""
-                          for (p = 0; p <= 7; p++) if ((R " " p) in b) t = t sprintf(" prio%d %.1fGB", p, b[R " " p] / 1e9)
+                          for (p = 0; p <= 7; p++) if ((R " " p) in b) t = t sprintf(" prio%d %s", p, b[R " " p] < 5e7 ? "<0.1GB" : sprintf("%.1fGB", b[R " " p] / 1e9))
                           if (t != "") printf "rail %s:%s  ", R, t }
                       if (!n) printf "no per-priority byte counters" }' "$WORK/nicmap" "$WORK/prio_delta")"
             awk 'tolower($3) !~ /byte|packet/ || $3 ~ /^rdma:/' "$WORK/prio_delta" | sort -k4 -rn > "$WORK/prio_events"
