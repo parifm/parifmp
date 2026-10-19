@@ -1,0 +1,761 @@
+#!/bin/bash
+# fabric_sleuth: dual-rail backend-to-backend iperf3 fabric check.
+# Hosts and rails come from env vars (see usage); output is a tarball
+# that generate_dashboard.py turns into an HTML dashboard.
+
+usage() {
+    cat <<'EOF'
+Usage: FS_HOSTS=<targets> FS_RAIL_A=<cidr,...> FS_RAIL_B=<cidr,...> ./iperf3_be_to_be_dual_path.sh [duration_s]
+       FS_HOSTS=<targets> ./iperf3_be_to_be_dual_path.sh --list   (print expanded targets, no ssh)
+
+Required
+  FS_HOSTS   ssh targets, comma or space separated, any mix of:
+               10.1.0.5,node07          single IPs or hostnames
+               10.1.0.0/24              CIDR (network and broadcast dropped below /31)
+               10.1.0.10-10.1.1.20      full range
+               10.1.0.10-40             last-octet range
+               10.1.0-1.10-40           per-octet ranges (nmap style)
+               @hosts.txt               file, entries split on lines/commas/spaces, # comments
+  FS_RAIL_A  rail A data subnets, comma separated:  10.20.1.0/24,10.20.3.0/24
+  FS_RAIL_B  rail B data subnets:                    10.20.2.0/24,10.20.4.0/24
+   or
+  FS_RAILS   shorthand for one subnet per rail, A first:  10.20.1.0/24,10.20.2.0/24
+   or
+  FS_NICS    data NIC per rail, rail A first:   enp5s0np0,enp196s0np0   (wins over the subnet forms)
+  None set: the tool sweeps the hosts, prints the IPv4 subnets it found, and stops.
+
+Optional (default)
+  FS_DURATION      iperf3 seconds per run (120; $1 also sets it)
+  FS_ITER          iterations, pairs reshuffled after the first (5)
+  FS_STREAMS       iperf3 parallel streams, >=2 (16)
+  FS_PORT          iperf3 port (5201)
+  FS_SSH_USER      ssh user; non-root runs remote steps with sudo -n (root)
+  FS_SSH_PARALLEL  ssh sessions at once for sweep and collection (64)
+  FS_MAX_TARGETS   refuse to expand FS_HOSTS beyond this (4096)
+  FS_LABEL         name in the report and tarball (first tested hostname)
+  FS_OUT_DIR       where the tarball goes (.)
+  FS_LINE_GBPS     link speed for OK/SLOW cut-offs (most common rail NIC speed)
+  FS_OK_PCT        OK at or above this % of link speed (75)
+  FS_SLOW_PCT      SLOW at or above this %, CRITICAL below (50)
+  FS_BUSY_CHECK    command run on each host before any load; exit 0 = host is in
+                   production use, 1 = idle, anything else = unknown (counts as in use).
+                   Default: WEKA containers running (`weka local ps`); idle where WEKA
+                   isn't installed. Other example: 'systemctl is-active --quiet myservice'.
+                   none = no check.
+  FS_BUSY_OK=1     run even where FS_BUSY_CHECK says in use (stop the cluster's I/O first)
+EOF
+}
+
+die() { echo "ERROR: $*" >&2; exit 2; }
+log() { echo "# $*" >&2; }
+
+# ---------- target expansion (pure bash, no ssh) ----------
+
+is_ip() {
+    [[ $1 =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+    local o
+    for o in "${BASH_REMATCH[@]:1}"; do (( 10#$o <= 255 )) || return 1; done
+}
+ip2int() { local IFS=.; set -- $1; echo $(( (10#$1 << 24) + (10#$2 << 16) + (10#$3 << 8) + 10#$4 )); }
+int2ip() { echo "$(( $1 >> 24 & 255 )).$(( $1 >> 16 & 255 )).$(( $1 >> 8 & 255 )).$(( $1 & 255 ))"; }
+
+# CIDR -> "network broadcast" as integers
+cidr_bounds() {
+    local ip=${1%/*} len=${1#*/}
+    [[ $1 == */* ]] && is_ip "$ip" && [[ $len =~ ^[0-9]{1,2}$ ]] && (( 10#$len <= 32 )) || return 1
+    local mask=$(( (0xFFFFFFFF << (32 - 10#$len)) & 0xFFFFFFFF ))
+    local net=$(( $(ip2int "$ip") & mask ))
+    echo "$net $(( net | (~mask & 0xFFFFFFFF) ))"
+}
+
+in_cidr() {  # ip cidr; no subshells, it runs per address per host
+    is_ip "$1" || return 1
+    local -a o; IFS=. read -ra o <<<"$1"
+    local n=$(( (10#${o[0]} << 24) + (10#${o[1]} << 16) + (10#${o[2]} << 8) + 10#${o[3]} ))
+    local b=${_CIDR_CACHE[$2]}
+    [[ -n $b ]] || { b=$(cidr_bounds "$2") || return 1; _CIDR_CACHE[$2]=$b; }
+    (( n >= ${b% *} && n <= ${b#* } ))
+}
+declare -A _CIDR_CACHE=()
+
+declare -a TARGETS=()
+declare -A _SEEN=()
+_emit() {
+    [[ -n ${_SEEN[$1]+x} ]] && return
+    _SEEN[$1]=1; TARGETS+=("$1")
+    (( ${#TARGETS[@]} <= FS_MAX_TARGETS )) || die "FS_HOSTS expands past FS_MAX_TARGETS=$FS_MAX_TARGETS; narrow it or raise the cap"
+}
+_need() {  # refuse a range before looping over it
+    (( ${#TARGETS[@]} + $1 <= FS_MAX_TARGETS )) || die "'$2' adds $1 targets, past FS_MAX_TARGETS=$FS_MAX_TARGETS"
+}
+
+expand_entry() {
+    local e=$1 b lo hi n
+    [[ $e == *:* ]] && die "IPv6 is not supported: '$e'"
+    if [[ $e == */* ]]; then
+        b=$(cidr_bounds "$e") || die "bad CIDR: '$e'"
+        lo=${b% *}; hi=${b#* }
+        (( hi - lo >= 2 )) && { lo=$(( lo + 1 )); hi=$(( hi - 1 )); }
+        _need $(( hi - lo + 1 )) "$e"
+        for (( n = lo; n <= hi; n++ )); do _emit "$(int2ip $n)"; done
+    elif [[ $e =~ ^([0-9.]+)-([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+        local from=${BASH_REMATCH[1]} to=${BASH_REMATCH[2]}  # is_ip resets BASH_REMATCH
+        is_ip "$from" && is_ip "$to" || die "bad IP range: '$e'"
+        lo=$(ip2int "$from"); hi=$(ip2int "$to")
+        (( lo <= hi )) || die "range runs backwards: '$e'"
+        _need $(( hi - lo + 1 )) "$e"
+        for (( n = lo; n <= hi; n++ )); do _emit "$(int2ip $n)"; done
+    elif [[ $e =~ ^[0-9]+(-[0-9]+)?\.[0-9]+(-[0-9]+)?\.[0-9]+(-[0-9]+)?\.[0-9]+(-[0-9]+)?$ ]]; then
+        local -a lo4 hi4; local IFS=. o i count=1 a b c d
+        local -a oct=($e)
+        for i in 0 1 2 3; do
+            o=${oct[$i]}
+            lo4[$i]=$(( 10#${o%-*} )); hi4[$i]=$(( 10#${o#*-} ))
+            (( lo4[i] <= hi4[i] && hi4[i] <= 255 )) || die "bad octet '$o' in '$e'"
+            count=$(( count * (hi4[i] - lo4[i] + 1) ))
+        done
+        unset IFS
+        _need $count "$e"
+        for (( a = lo4[0]; a <= hi4[0]; a++ )); do for (( b = lo4[1]; b <= hi4[1]; b++ )); do
+        for (( c = lo4[2]; c <= hi4[2]; c++ )); do for (( d = lo4[3]; d <= hi4[3]; d++ )); do
+            _emit "$a.$b.$c.$d"
+        done; done; done; done
+    elif [[ $e =~ ^[0-9.-]+$ ]]; then
+        die "not a valid IP, range or CIDR: '$e'"
+    elif [[ $e =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]; then
+        _emit "$e"
+    else
+        die "not a hostname, IP, range or CIDR: '$e'"
+    fi
+}
+
+# split on commas and whitespace, no globbing
+_words() { local IFS=$', \t\n'; set -f; WORDS=($1); set +f; }
+
+expand_targets() {
+    local w line
+    TARGETS=(); _SEEN=()
+    [[ -n $1 ]] || die "FS_HOSTS is empty"
+    _words "$1"
+    local -a top=("${WORDS[@]}")
+    for w in "${top[@]}"; do
+        if [[ $w == @* ]]; then
+            [[ -r ${w#@} ]] || die "cannot read host file '${w#@}'"
+            while IFS= read -r line || [[ -n $line ]]; do
+                line=${line%%#*}
+                _words "$line"
+                for e in "${WORDS[@]}"; do
+                    [[ $e == @* ]] && die "nested @file not supported: '$e' in ${w#@}"
+                    expand_entry "$e"
+                done
+            done < "${w#@}"
+        else
+            expand_entry "$w"
+        fi
+    done
+    (( ${#TARGETS[@]} > 0 )) || die "FS_HOSTS expanded to zero targets"
+}
+
+# ---------- rail spec ----------
+
+parse_rails() {
+    if [[ -n $FS_NICS ]]; then
+        RAIL_MODE=nic; _words "$FS_NICS"; RAIL_SPEC=("${WORDS[@]}")
+        local n
+        for n in "${RAIL_SPEC[@]}"; do [[ $n =~ ^[A-Za-z0-9_.:-]+$ ]] || die "bad NIC name in FS_NICS: '$n'"; done
+        [[ ${RAIL_SPEC[0]} != "${RAIL_SPEC[1]}" ]] || die "FS_NICS names the same NIC twice"
+    elif [[ -n $FS_RAIL_A || -n $FS_RAIL_B ]]; then
+        [[ -n $FS_RAIL_A && -n $FS_RAIL_B ]] || die "set both FS_RAIL_A and FS_RAIL_B"
+        RAIL_MODE=cidr
+        _words "$FS_RAIL_A"; RAIL_SPEC[0]="${WORDS[*]}"
+        _words "$FS_RAIL_B"; RAIL_SPEC[1]="${WORDS[*]}"
+    elif [[ -n $FS_RAILS ]]; then
+        RAIL_MODE=cidr; _words "$FS_RAILS"
+        (( ${#WORDS[@]} == 2 )) || die "FS_RAILS takes one CIDR per rail (A,B), got ${#WORDS[@]}; for several per rail use FS_RAIL_A and FS_RAIL_B"
+        RAIL_SPEC=("${WORDS[@]}")
+    else
+        RAIL_MODE=none; RAIL_SPEC=(); return
+    fi
+    (( ${#RAIL_SPEC[@]} == 2 )) || die "need exactly 2 rails, got ${#RAIL_SPEC[@]}: ${RAIL_SPEC[*]}"
+    [[ $RAIL_MODE == cidr ]] || return 0
+    # a rail is a set of CIDRs; no A CIDR may overlap a B CIDR
+    local ca cb a b
+    for ca in ${RAIL_SPEC[0]} ${RAIL_SPEC[1]}; do [[ -n $(cidr_bounds "$ca") ]] || die "bad rail CIDR: '$ca'"; done
+    for ca in ${RAIL_SPEC[0]}; do for cb in ${RAIL_SPEC[1]}; do
+        a=$(cidr_bounds "$ca"); b=$(cidr_bounds "$cb")
+        if (( ${a% *} <= ${b#* } && ${b% *} <= ${a#* } )); then
+            die "rail A $ca overlaps rail B $cb, so the rails can't be told apart; list each rail's subnets or set FS_NICS"
+        fi
+    done; done
+}
+
+# exit 1 = WEKA not installed or no container running, 0 = one is Running, 2 = CLI failed
+WEKA_BUSY_CHECK='[ -n "$(command -v weka)" ] || exit 1; s=$(weka local ps --no-header -o name,state) || exit 2; echo "$s" | grep -qw Running'
+
+# ---------- ssh ----------
+
+throttle() { while (( $(jobs -rp | wc -l) >= FS_SSH_PARALLEL )); do wait -n; done; }
+rsh() { local t=$1; shift; ssh -n "${SSH_OPTS[@]}" "$t" "$@"; }
+rbash() { local t=$1; shift; ssh "${SSH_OPTS[@]}" "$t" $SUDO bash -s -- "$@"; }
+
+# Discovery: raw facts only, parsed locally.
+read -r -d '' DISCOVER_SCRIPT <<'EOF'
+echo "=== hostname ==="; hostname -s
+echo "=== machine-id ==="; cat /etc/machine-id 2>&1
+echo "=== addr ==="; ip -o -4 addr show
+echo "=== link ==="; ip -o link show
+echo "=== tools ==="
+for c in iperf3 ethtool lldpcli ibstat ss timeout; do p=$(command -v $c); echo "$c ${p:--}"; done
+if [ -n "$BUSY_CHECK" ]; then
+    out=$(timeout 20 bash -c "$BUSY_CHECK" 2>&1); rc=$?
+    echo "=== busy ==="; echo "rc=$rc"; echo "$out" | head -n 20
+fi
+EOF
+
+# Per-host diagnostics for the rail NICs ($@, "-" = none)
+read -r -d '' DIAG_SCRIPT <<'EOF'
+h=$(hostname -s)
+have() { [ -n "$(command -v "$1")" ]; }
+ctr() { awk -v k="$1:" '$1==k {print $2; f=1; exit} END {if (!f) print "n/a"}'; }
+for nic in "$@"; do
+    [ "$nic" = - ] && continue
+    ip=$(ip -o -4 addr show dev "$nic" 2>&1 | awk '{split($4,a,"/"); print a[1]; exit}')
+    if have ethtool; then
+        eth=$(ethtool "$nic" 2>&1); inf=$(ethtool -i "$nic" 2>&1)
+        mod=$(ethtool -m "$nic" 2>&1); st=$(ethtool -S "$nic" 2>&1)
+    else
+        eth="ethtool not installed"; inf=$eth; mod=$eth; st=$eth
+    fi
+    speed=$(echo "$eth" | awk '/Speed:/{print $2}')
+    set -- $(for k in rx_corrected_bits_phy rx_err_lane_0_phy rx_err_lane_1_phy rx_err_lane_2_phy \
+                      rx_err_lane_3_phy link_down_events_phy rx_pcs_symbol_err_phy; do echo "$st" | ctr $k; done)
+    # Rx power per channel (dBm) and module temp; vendors word these differently
+    rxp=$(echo "$mod" | awk '
+        /(Rcvr|Receiver|Rx).*power/ && /dBm/ && !/thresh|alarm|warning/ {
+            ch = 1; if (match($0, /Channel [0-9]+/)) ch = substr($0, RSTART + 8, RLENGTH - 8)
+            for (i = 2; i <= NF; i++) if ($i == "dBm") v[ch] = $(i-1)
+        }
+        END { for (c = 1; c <= 4; c++) printf "%s ", (c in v ? v[c] : "n/a") }')
+    temp=$(echo "$mod" | awk '/Module temperature/ {for (i = 1; i <= NF; i++) if ($i == "degrees") {print $(i-1); exit}}')
+    echo "@@NIC_DIAG $h $nic ${ip:-none} ${speed:-unknown} $* $rxp${temp:-n/a}"
+    if have lldpcli; then lldp=$(lldpcli show neighbors ports "$nic" 2>&1); else lldp=""; fi
+    chassis=$(echo "$lldp" | awk -F': *' '/SysName:/{gsub(/ /,"_",$2); print $2; exit}')
+    portid=$(echo "$lldp" | awk '/PortID:/{print $NF; exit}')
+    portdesc=$(echo "$lldp" | awk -F': *' '/PortDescr:/{gsub(/ /,"_",$2); print $2; exit}')
+    sysdesc=$(echo "$lldp" | awk -F': *' '/SysDescr:/{gsub(/ /,"_",$2); print $2; exit}')
+    echo "@@LLDP $h $nic ${ip:-none} ${chassis:-unknown} ${portid:-unknown} ${portdesc:-unknown} ${sysdesc:-unknown}"
+    f() { echo "$inf" | awk -F': ' -v k="$1" '$1==k {print $2; exit}'; }
+    drv=$(f driver); ver=$(f version); ver=${ver// /_}; fw=$(f firmware-version); bus=$(f bus-info)
+    echo "@@DRV $h $nic ${ip:-none} ${drv:-unknown} ${ver:-unknown} ${fw:-unknown} ${bus:-unknown}"
+    echo "=== ethtool $nic ==="; echo "$eth"
+    echo "=== ethtool -i $nic ==="; echo "$inf"
+    echo "=== ethtool -m $nic ==="; echo "$mod"
+    echo "=== ethtool -S $nic ==="; echo "$st" | grep -E "rx_|tx_|link_down|pcs_symbol|prio|pause" | grep -v "ch[0-9]"
+    echo "=== lldpcli $nic ==="; echo "${lldp:-lldpcli not installed}"
+done
+echo "=== hostname ==="; echo "$h"
+echo "=== ip -br -4 a ==="; ip -br -4 a
+if have ibstat; then echo "=== ibstat ==="; ibstat 2>&1; fi
+EOF
+
+# Drop counters for the rail NICs ($@): "host_nic ip rx_drop tx_drop rx_oob"
+read -r -d '' DROPS_SCRIPT <<'EOF'
+h=$(hostname -s)
+for nic in "$@"; do
+    [ "$nic" = - ] && continue
+    ip=$(ip -o -4 addr show dev "$nic" 2>&1 | awk '{split($4,a,"/"); print a[1]; exit}')
+    rx=$(cat /sys/class/net/$nic/statistics/rx_dropped 2>&1); tx=$(cat /sys/class/net/$nic/statistics/tx_dropped 2>&1)
+    oob=$(ethtool -S "$nic" 2>&1 | awk '$1=="rx_out_of_buffer:" {print $2; f=1} END {if (!f) print "na"}')
+    echo "${h}_${nic} ${ip:-none} ${rx:-na} ${tx:-na} ${oob:-na}"
+done
+EOF
+
+# Path check: src_ip dst_ip src_nic df_size -> OK or a reason
+read -r -d '' PATH_SCRIPT <<'EOF'
+r=$(ip -o route get "$2" from "$1" 2>&1); r=${r%%$'\n'*}
+case " $r " in *" dev $3 "*) ;; *) echo "ROUTE egress is not $3: $r"; exit 0 ;; esac
+out=$(ping -c1 -W1 -I "$1" "$2" 2>&1) || { echo "PING no reply"; exit 0; }
+out=$(ping -c1 -W2 -M do -s "$4" -I "$1" "$2" 2>&1) || { echo "MTU $(( $4 + 28 ))B no-fragment ping failed"; exit 0; }
+echo OK
+EOF
+
+# Servers: port ip... ; clears earlier iperf3 first (port clash)
+read -r -d '' SERVER_SCRIPT <<'EOF'
+port=$1; shift
+pkill -x iperf3
+for i in $(seq 20); do [ -z "$(pgrep -x iperf3)" ] && break; sleep 0.5; done
+for ip in "$@"; do iperf3 -s -D -B "$ip" -p "$port"; done
+EOF
+
+# One iperf3 run: src dst port streams secs -> "[SUM] ... receiver retransmits:N" or "ERROR ..."
+read -r -d '' IPERF_SCRIPT <<'EOF'
+out=$(iperf3 --connect-timeout 5000 -c "$2" -B "$1" -p "$3" -P "$4" -t "$5" -f g -Z 2>&1); rc=$?
+retr=$(echo "$out" | awk '/SUM.*sender/{print $(NF-1)}')
+rcv=$(echo "$out" | grep -m1 'SUM.*receiver')
+if [ -n "$rcv" ]; then echo "$rcv retransmits:${retr:-0}"
+else echo "ERROR rc=$rc $(echo "$out" | grep -i -m1 error | tr -s ' ')"; fi
+EOF
+
+# ---------- helpers on discovery files ----------
+
+section() {  # file name -> lines of "=== name ===" section
+    awk -v s="=== $2 ===" '$0==s {on=1; next} /^=== .* ===$/ {on=0} on' "$1"
+}
+
+# rail_lookup k r: sets RNIC/RIP/RMTU/RSTATE for host k rail r from its discovery file
+rail_lookup() {
+    local k=$1 r=$2 f=${DISC[$1]} nic="" ip="" n
+    if [[ $RAIL_MODE == nic ]]; then
+        nic=${RAIL_SPEC[$r]}
+        if ! section "$f" link | awk -v n="$nic" '{sub(/:$/,"",$2); sub(/@.*/,"",$2)} $2==n {f=1} END {exit !f}'; then
+            RSTATE[$k,$r]="no NIC $nic"; RNIC[$k,$r]=-; RIP[$k,$r]=none; return
+        fi
+        ip=$(section "$f" addr | awk -v n="$nic" '$2==n {split($4,a,"/"); print a[1]; exit}')
+        [[ -n $ip ]] || { RNIC[$k,$r]=$nic; RIP[$k,$r]=none; RSTATE[$k,$r]="no IPv4 on $nic"; return; }
+    else
+        local -a hits=()
+        local c
+        while read -r n a; do
+            for c in ${RAIL_SPEC[$r]}; do in_cidr "$a" "$c" && { hits+=("$n $a"); break; }; done
+        done < <(section "$f" addr | awk '{split($4,a,"/"); print $2, a[1]}')
+        if (( ${#hits[@]} == 0 )); then
+            RNIC[$k,$r]=-; RIP[$k,$r]=none; RSTATE[$k,$r]="no address in ${RAIL_SPEC[$r]// /,}"; return
+        fi
+        nic=${hits[0]% *}; ip=${hits[0]#* }
+        for n in "${hits[@]}"; do
+            [[ ${n% *} == "$nic" ]] || { RNIC[$k,$r]=-; RIP[$k,$r]=none; RSTATE[$k,$r]="AMBIGUOUS: ${#hits[@]} NICs in ${RAIL_SPEC[$r]// /,}"; return; }
+        done
+    fi
+    RNIC[$k,$r]=$nic; RIP[$k,$r]=$ip
+    local line; line=$(section "$f" link | awk -v n="$nic" '{x=$2; sub(/:$/,"",x); sub(/@.*/,"",x)} x==n {print; exit}')
+    RMTU[$k,$r]=$(awk '{for (i = 1; i < NF; i++) if ($i == "mtu") print $(i+1)}' <<<"$line")
+    if [[ $line != *LOWER_UP* ]]; then RSTATE[$k,$r]="link DOWN on $nic"
+    else RSTATE[$k,$r]=ok; fi
+}
+
+rail_ok() { [[ ${RSTATE[$1,$2]} == ok ]]; }
+
+shuffle_order() {  # Fisher-Yates on ORDER with $RANDOM
+    local i j t
+    for (( i = ${#ORDER[@]} - 1; i > 0; i-- )); do
+        j=$(( RANDOM % (i + 1) )); t=${ORDER[i]}; ORDER[i]=${ORDER[j]}; ORDER[j]=$t
+    done
+}
+
+# check_path key src_k src_r dst_k dst_r: writes OK or a reason to $PATHS/key
+check_path() {
+    local key=$1 sk=$2 sr=$3 dk=$4 dr=$5
+    if ! rail_ok $sk $sr; then echo "DOWN ${T_HOST[$sk]}: ${RSTATE[$sk,$sr]}" > "$PATHS/$key"; return; fi
+    if ! rail_ok $dk $dr; then echo "DOWN ${T_HOST[$dk]}: ${RSTATE[$dk,$dr]}" > "$PATHS/$key"; return; fi
+    local m1=${RMTU[$sk,$sr]:-1500} m2=${RMTU[$dk,$dr]:-1500}
+    local size=$(( (m1 < m2 ? m1 : m2) - 28 ))
+    ( out=$(rbash "${T_TARGET[$sk]}" "${RIP[$sk,$sr]}" "${RIP[$dk,$dr]}" "${RNIC[$sk,$sr]}" $size <<<"$PATH_SCRIPT" 2>&1)
+      echo "${out:-SSH no output}" | tail -n1 > "$PATHS/$key" ) &
+}
+
+# run_path key src_k src_r dst_k dst_r: one iperf3 run, appends to $PHASE_OUT
+run_path() {
+    local key=$1 sk=$2 sr=$3 dk=$4 dr=$5 st
+    st=$(cat "$PATHS/$key")
+    if [[ $st != OK ]]; then
+        echo "$ITER $PHASE ${T_HOST[$sk]} ${RIP[$sk,$sr]} ${T_HOST[$dk]} ${RIP[$dk,$dr]} $st" >> "$PATH_EXCL"
+        log "  skip ${T_HOST[$sk]} ${RIP[$sk,$sr]} -> ${T_HOST[$dk]} ${RIP[$dk,$dr]}: $st"
+        return
+    fi
+    ( out=$(timeout $(( FS_DURATION + 30 )) ssh "${SSH_OPTS[@]}" "${T_TARGET[$sk]}" $SUDO bash -s -- \
+              "${RIP[$sk,$sr]}" "${RIP[$dk,$dr]}" "$FS_PORT" "$FS_STREAMS" "$FS_DURATION" <<<"$IPERF_SCRIPT" 2>&1)
+      [[ -n $out ]] || out="ERROR timeout or ssh failure"
+      echo "${RIP[$sk,$sr]},${RIP[$dk,$dr]},${out%%$'\n'*}" >> "$PHASE_OUT" ) &
+}
+
+collect_drops() {
+    local outfile=$1 k
+    : > "$outfile"
+    for k in "${ELIG[@]}"; do
+        rbash "${T_TARGET[$k]}" "${RNIC[$k,0]}" "${RNIC[$k,1]}" <<<"$DROPS_SCRIPT" >> "$outfile" 2>> "$RUNLOG_SSH" &
+    done
+    wait
+    sort -o "$outfile" "$outfile"
+}
+
+compute_drops() {
+    awk -v label="$3" '
+        NR==FNR { pre[$1]=$3" "$4" "$5; next }
+        ($1 in pre) {
+            split(pre[$1], p, " ")
+            drx = ($3 ~ /^[0-9]+$/ && p[1] ~ /^[0-9]+$/) ? $3 - p[1] : 0
+            dtx = ($4 ~ /^[0-9]+$/ && p[2] ~ /^[0-9]+$/) ? $4 - p[2] : 0
+            doob = ($5 ~ /^[0-9]+$/ && p[3] ~ /^[0-9]+$/) ? $5 - p[3] : 0
+            if (drx > 0 || dtx > 0 || doob > 0)
+                printf "%s %s %s rx_drop:%d tx_drop:%d rx_oob:%d %s\n", $1, $2, label, drx, dtx, doob, label
+        }' "$1" "$2"
+}
+
+stop_servers() {
+    (( ${#STARTED[@]} > 0 )) || return 0
+    local k
+    log "Stopping iperf3 on ${#STARTED[@]} hosts..."
+    for k in "${!STARTED[@]}"; do rsh "${T_TARGET[$k]}" $SUDO pkill -x iperf3 >> "$WORK/cleanup.log" 2>&1 & done
+    wait
+    STARTED=()
+}
+
+cleanup() {
+    local k
+    stop_servers
+    for k in "${T_TARGET[@]}" "${!REACH_ONLY[@]}"; do
+        ssh -O exit -o "ControlPath=$SOCKET_DIR/%C" -l "$FS_SSH_USER" "$k" >> "$WORK/cleanup.log" 2>&1 &
+    done
+    wait
+    if [[ -z $DONE ]]; then
+        if [[ -n $LOADED ]]; then log "Run did not finish; partial data left in $COLLECT_DIR"
+        else rm -rf "${COLLECT_DIR:?}"; fi
+    fi
+    rm -rf "${SOCKET_DIR:?}" "${WORK:?}"
+}
+
+# ======================================================================
+
+main() {
+    (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 3) )) || die "needs bash 4.3+"
+    [[ $1 == -h || $1 == --help ]] && { usage; exit 0; }
+
+    : "${FS_ITER:=5}" "${FS_STREAMS:=16}" "${FS_PORT:=5201}" "${FS_SSH_USER:=root}"
+    : "${FS_SSH_PARALLEL:=64}" "${FS_MAX_TARGETS:=4096}" "${FS_OUT_DIR:=.}"
+    : "${FS_OK_PCT:=75}" "${FS_SLOW_PCT:=50}" "${FS_BUSY_OK:=0}"
+    # Default busy check: any WEKA container in STATE Running (docs.weka.io CLI reference, `weka local ps`)
+    : "${FS_BUSY_CHECK:=$WEKA_BUSY_CHECK}"
+    [[ $FS_BUSY_CHECK == none ]] && FS_BUSY_CHECK=""
+    [[ $1 =~ ^[0-9]+$ ]] && FS_DURATION=$1
+    : "${FS_DURATION:=120}"
+    local v
+    for v in FS_DURATION FS_ITER FS_STREAMS FS_PORT FS_SSH_PARALLEL FS_MAX_TARGETS FS_OK_PCT FS_SLOW_PCT; do
+        [[ ${!v} =~ ^[0-9]+$ ]] && (( ${!v} > 0 )) || die "$v must be a positive integer, got '${!v}'"
+    done
+    (( FS_STREAMS >= 2 )) || die "FS_STREAMS must be >= 2 (iperf3 prints no [SUM] line for one stream)"
+    [[ -z $FS_LINE_GBPS || $FS_LINE_GBPS =~ ^[0-9]+$ ]] || die "FS_LINE_GBPS must be an integer"
+
+    expand_targets "$FS_HOSTS"
+    if [[ $1 == --list ]]; then printf '%s\n' "${TARGETS[@]}"; log "${#TARGETS[@]} targets"; exit 0; fi
+
+    local c
+    for c in ssh timeout column sort awk tar; do [[ -n $(command -v $c) ]] || die "'$c' not found on this machine"; done
+    [[ -d $FS_OUT_DIR && -w $FS_OUT_DIR ]] || die "FS_OUT_DIR '$FS_OUT_DIR' is not a writable directory"
+
+    WORK=$(mktemp -d /tmp/fs_work.XXXXXX)
+    SOCKET_DIR=$(mktemp -d /tmp/fs_ssh.XXXXXX)
+    COLLECT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/dp_validation_XXXXXX")
+    RAW_DIR=$COLLECT_DIR/raw_per_host; mkdir -p "$RAW_DIR" "$WORK/disc" "$WORK/sweep"
+    RUNLOG_SSH=$COLLECT_DIR/ssh_errors.log
+    exec 2> >(tee -a "$COLLECT_DIR/run.log" >&2)
+    : &  # bash 5.1+: a bare `wait` blocks on the tee above while it is still $!
+
+    SUDO=""; [[ $FS_SSH_USER == root ]] || SUDO="sudo -n"
+    SSH_OPTS=(-o ControlMaster=auto -o ControlPersist=15m -o "ControlPath=$SOCKET_DIR/%C"
+              -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=5
+              -o ServerAliveInterval=15 -l "$FS_SSH_USER")
+    declare -gA T_TARGET T_HOST DISC RNIC RIP RMTU RSTATE STARTED REACH_ONLY DOWN_IP
+    trap cleanup EXIT
+    parse_rails
+    log "Begin $(date) | ${#TARGETS[@]} targets | rails: $RAIL_MODE A=${RAIL_SPEC[0]// /,} B=${RAIL_SPEC[1]// /,} | ${FS_DURATION}s x $FS_ITER iterations"
+
+    # --- 1. reachability sweep (capped) ---
+    local i t
+    log "Sweeping ${#TARGETS[@]} targets over ssh, $FS_SSH_PARALLEL at a time..."
+    for i in "${!TARGETS[@]}"; do
+        throttle
+        t=${TARGETS[$i]}
+        ( if rsh "$t" true 2> "$WORK/sweep/$i.err"; then echo "$i" > "$WORK/sweep/$i.ok"; fi ) &
+    done
+    wait
+    local -a REACH=()
+    for i in "${!TARGETS[@]}"; do
+        if [[ -f $WORK/sweep/$i.ok ]]; then REACH+=("$i")
+        else
+            local why; why=$(grep -v '^Warning: Permanently added' "$WORK/sweep/$i.err" | tail -n1)
+            echo "${TARGETS[$i]} ${why:-no error text}" >> "$WORK/unreachable.txt"
+        fi
+    done
+    if [[ -s $WORK/unreachable.txt ]]; then
+        log "$(wc -l < "$WORK/unreachable.txt" | tr -d ' ') of ${#TARGETS[@]} targets unreachable, by reason:"
+        awk '{$1=""; sub(/^ /,""); sub(/^ssh: connect to host [^ ]+ port [0-9]+: /,""); print}' "$WORK/unreachable.txt" \
+            | sort | uniq -c | sort -rn | sed 's/^/#   /' >&2
+        cp "$WORK/unreachable.txt" "$COLLECT_DIR/unreachable.txt"
+    fi
+    (( ${#REACH[@]} > 0 )) || die "no target answered ssh as $FS_SSH_USER"
+
+    # --- 2. discovery ---
+    log "Discovering ${#REACH[@]} hosts..."
+    for i in "${REACH[@]}"; do
+        throttle
+        rbash "${TARGETS[$i]}" <<<"BUSY_CHECK=$(printf '%q' "$FS_BUSY_CHECK")"$'\n'"$DISCOVER_SCRIPT" \
+            > "$WORK/disc/$i" 2>> "$RUNLOG_SSH" &
+    done
+    wait
+
+    # dedupe: the same host can answer on several targets (mgmt and data IPs in one CIDR)
+    local -A SEEN_ID=()
+    local k=0 id host dups=0
+    for i in "${REACH[@]}"; do
+        host=$(section "$WORK/disc/$i" hostname | head -n1)
+        [[ -n $host ]] || { echo "${TARGETS[$i]} discovery returned nothing" >> "$COLLECT_DIR/unreachable.txt"; continue; }
+        id=$(section "$WORK/disc/$i" machine-id | head -n1)
+        [[ $id =~ ^[0-9a-f]{32}$ ]] || id=$host
+        if [[ -n ${SEEN_ID[$id]+x} ]]; then
+            dups=$(( dups + 1 )); REACH_ONLY[${TARGETS[$i]}]=1
+            echo "${TARGETS[$i]} same host as ${SEEN_ID[$id]}" >> "$COLLECT_DIR/excluded.txt"
+            continue
+        fi
+        SEEN_ID[$id]=$host
+        T_TARGET[$k]=${TARGETS[$i]}; T_HOST[$k]=$host; DISC[$k]=$WORK/disc/$i
+        k=$(( k + 1 ))
+    done
+    (( dups > 0 )) && log "$dups targets were a second address of a host already found; using the first"
+
+    if [[ $RAIL_MODE == none ]]; then
+        log "No rail subnets or NIC names set. IPv4 subnets on the reachable hosts (hosts, NIC, subnet):"
+        for k in "${!T_TARGET[@]}"; do
+            section "${DISC[$k]}" addr | awk '$2!="lo" {print $2, $4}' | while read -r n a; do
+                local b; b=$(cidr_bounds "$a") && echo "$n $(int2ip ${b% *})/${a#*/}"
+            done
+        done | sort | uniq -c | sort -rn | sed 's/^/#   /' >&2
+        die "set FS_RAIL_A and FS_RAIL_B (subnets per rail), FS_RAILS (one per rail), or FS_NICS (two NIC names)"
+    fi
+
+    # --- 3. rails, eligibility, preflight ---
+    local -a ELIG=() NO_IPERF=() BUSY=()
+    local r rc
+    for k in "${!T_TARGET[@]}"; do
+        rail_lookup $k 0; rail_lookup $k 1
+        if [[ ${RNIC[$k,0]} == - && ${RNIC[$k,1]} == - ]]; then
+            echo "${T_TARGET[$k]} ${T_HOST[$k]} not on data rails" >> "$COLLECT_DIR/excluded.txt"; continue
+        fi
+        if [[ ${RNIC[$k,0]} != - && ${RNIC[$k,0]} == "${RNIC[$k,1]}" ]]; then
+            echo "${T_TARGET[$k]} ${T_HOST[$k]} both rails on one NIC ${RNIC[$k,0]}" >> "$COLLECT_DIR/excluded.txt"; continue
+        fi
+        ELIG+=("$k")
+        section "${DISC[$k]}" tools | grep -q '^iperf3 /' || NO_IPERF+=("${T_HOST[$k]}")
+        if [[ -n $FS_BUSY_CHECK ]]; then
+            rc=$(section "${DISC[$k]}" busy | sed -n '1s/^rc=//p')
+            if [[ $rc == 0 ]]; then BUSY+=("${T_HOST[$k]}(in use)")
+            elif [[ $rc != 1 ]]; then BUSY+=("${T_HOST[$k]}(check rc=${rc:-none})"); fi
+        fi
+        for r in 0 1; do
+            [[ ${RSTATE[$k,$r]} == ok ]] || { [[ ${RIP[$k,$r]} != none ]] && DOWN_IP[${RIP[$k,$r]}]=1; }
+        done
+    done
+    local not_rail; not_rail=$(grep -c 'not on data rails' "$COLLECT_DIR/excluded.txt" 2>&1)
+    [[ $not_rail =~ ^[0-9]+$ && $not_rail -gt 0 ]] && log "$not_rail reachable hosts have no address on either rail; left out"
+    (( ${#ELIG[@]} >= 2 )) || die "need at least 2 hosts on the rails, found ${#ELIG[@]} (see $COLLECT_DIR/excluded.txt)"
+    (( ${#NO_IPERF[@]} == 0 )) || die "iperf3 missing on ${#NO_IPERF[@]} hosts: ${NO_IPERF[*]}"
+    if (( ${#BUSY[@]} > 0 )); then
+        if [[ $FS_BUSY_OK != 1 ]]; then
+            die "FS_BUSY_CHECK: ${#BUSY[@]} hosts in use or check failed: ${BUSY[*]:0:10}. Line-rate load can starve cluster heartbeats and get nodes evicted. Stop the cluster's I/O and set FS_BUSY_OK=1 to proceed."
+        fi
+        log "WARNING: ${#BUSY[@]} hosts in use per FS_BUSY_CHECK; FS_BUSY_OK=1 given"
+        for k in "${ELIG[@]}"; do
+            echo "== ${T_HOST[$k]}"; section "${DISC[$k]}" busy
+        done > "$COLLECT_DIR/busy_check.txt"
+    fi
+
+    # rail table: what an engineer checks before load starts
+    {
+        echo "Host Target Rail_A_NIC Rail_A_IP MTU_A State_A Rail_B_NIC Rail_B_IP MTU_B State_B"
+        for k in "${ELIG[@]}"; do
+            echo "${T_HOST[$k]} ${T_TARGET[$k]} ${RNIC[$k,0]} ${RIP[$k,0]} ${RMTU[$k,0]:--} ${RSTATE[$k,0]// /_} ${RNIC[$k,1]} ${RIP[$k,1]} ${RMTU[$k,1]:--} ${RSTATE[$k,1]// /_}"
+        done | sort -V
+    } | column -t > "$COLLECT_DIR/rails.txt"
+    local bad_rails; bad_rails=$(awk 'NR>1 && ($6!="ok" || $10!="ok")' "$COLLECT_DIR/rails.txt")
+    log "${#ELIG[@]} hosts on the rails. Rail NIC names and MTUs seen (count, NIC, MTU):"
+    for k in "${ELIG[@]}"; do for r in 0 1; do echo "rail_$([[ $r == 0 ]] && echo A || echo B) ${RNIC[$k,$r]} mtu=${RMTU[$k,$r]:--}"; done; done \
+        | sort | uniq -c | sed 's/^/#   /' >&2
+    if [[ -n $bad_rails ]]; then
+        log "Rails not usable (paths through them are skipped):"
+        echo "$bad_rails" | sed 's/^/#   /' >&2
+    else
+        log "All rails on all ${#ELIG[@]} hosts have an address and link"
+    fi
+
+    # --- 4. diagnostics ---
+    log "Collecting NIC diagnostics..."
+    local NIC_DIAG=$COLLECT_DIR/nic_diagnostics.txt LLDP_DATA=$COLLECT_DIR/lldp_neighbors.txt DRV_DATA=$COLLECT_DIR/driver_info.txt
+    : > "$NIC_DIAG"; : > "$LLDP_DATA"; : > "$DRV_DATA"
+    for k in "${ELIG[@]}"; do
+        throttle
+        rbash "${T_TARGET[$k]}" "${RNIC[$k,0]}" "${RNIC[$k,1]}" <<<"$DIAG_SCRIPT" > "$WORK/diag.$k" 2>&1 &
+    done
+    wait
+    for k in "${ELIG[@]}"; do
+        grep '^@@NIC_DIAG ' "$WORK/diag.$k" | cut -d' ' -f2- >> "$NIC_DIAG"
+        grep '^@@LLDP ' "$WORK/diag.$k" | cut -d' ' -f2- >> "$LLDP_DATA"
+        grep '^@@DRV ' "$WORK/diag.$k" | cut -d' ' -f2- >> "$DRV_DATA"
+        grep -v '^@@' "$WORK/diag.$k" > "$RAW_DIR/${T_HOST[$k]}.txt"
+    done
+    log "Diagnostics: $(wc -l < "$NIC_DIAG" | tr -d ' ') NIC, $(wc -l < "$LLDP_DATA" | tr -d ' ') LLDP, $(wc -l < "$DRV_DATA" | tr -d ' ') driver lines"
+
+    local LINE_GBPS=$FS_LINE_GBPS
+    if [[ -z $LINE_GBPS ]]; then
+        LINE_GBPS=$(awk '$4 ~ /^[0-9]+Mb\/s$/ {sub(/Mb\/s/,"",$4); n[$4/1000]++} END {for (s in n) if (n[s] > b) {b = n[s]; m = s} print m}' "$NIC_DIAG")
+    fi
+    if [[ -n $LINE_GBPS ]]; then
+        log "Link speed for cut-offs: ${LINE_GBPS}G (OK >= $(( LINE_GBPS * FS_OK_PCT / 100 ))G, SLOW >= $(( LINE_GBPS * FS_SLOW_PCT / 100 ))G)"
+        awk -v want="$(( LINE_GBPS * 1000 ))Mb/s" '$4 != want {printf "#   %s %s %s\n", $1, $2, $4}' "$NIC_DIAG" > "$WORK/offspeed"
+        [[ -s $WORK/offspeed ]] && { log "NICs not at ${LINE_GBPS}G:"; cat "$WORK/offspeed" >&2; }
+    else
+        log "WARNING: no link speed from ethtool and FS_LINE_GBPS unset; no OK/SLOW status"
+    fi
+
+    # --- 5. iperf3 servers ---
+    LOADED=1
+    log "Stopping stray iperf3 and starting servers on port $FS_PORT..."
+    for k in "${ELIG[@]}"; do
+        local ips=()
+        for r in 0 1; do rail_ok $k $r && ips+=("${RIP[$k,$r]}"); done
+        STARTED[$k]=1
+        rbash "${T_TARGET[$k]}" "$FS_PORT" "${ips[@]}" <<<"$SERVER_SCRIPT" >> "$RUNLOG_SSH" 2>&1 &
+    done
+    wait
+    for k in "${ELIG[@]}"; do
+        ( for i in $(seq 20); do
+              l=$(rsh "${T_TARGET[$k]}" ss -Htln 2>&1)
+              all=1
+              for r in 0 1; do rail_ok $k $r && [[ $l != *"${RIP[$k,$r]}:$FS_PORT "* ]] && all=0; done
+              (( all )) && exit 0
+              sleep 0.5
+          done
+          echo "$k" ) > "$WORK/srv.$k" &
+    done
+    wait
+    for k in "${ELIG[@]}"; do
+        if [[ -s $WORK/srv.$k ]]; then
+            for r in 0 1; do
+                rail_ok $k $r || continue
+                RSTATE[$k,$r]="iperf3 server not listening on ${RIP[$k,$r]}:$FS_PORT"; DOWN_IP[${RIP[$k,$r]}]=1
+            done
+            log "WARNING: ${T_HOST[$k]}: iperf3 server not listening; its paths are skipped"
+        fi
+    done
+
+    # --- 6. iterations ---
+    local RESULTS=$COLLECT_DIR/iperf3_results.txt DROP_TOTALS=$COLLECT_DIR/packet_drops.txt
+    PATH_EXCL=$COLLECT_DIR/paths_excluded.txt
+    : > "$RESULTS"; : > "$DROP_TOTALS"; : > "$PATH_EXCL"
+    ORDER=($(for k in "${ELIG[@]}"; do echo "$k ${T_HOST[$k]}"; done | sort -V -k2 | awk '{print $1}'))
+    local FIRST_HOST=${T_HOST[${ORDER[0]}]}
+    local n=${#ORDER[@]} half=$(( ${#ORDER[@]} / 2 )) p ck sk
+    for (( ITER = 1; ITER <= FS_ITER; ITER++ )); do
+        (( ITER > 1 )) && shuffle_order
+        log "============ Iteration $ITER of $FS_ITER ($half pairs) ============"
+        (( n % 2 )) && log "Sits out this iteration (odd host count): ${T_HOST[${ORDER[n-1]}]}"
+        PATHS=$WORK/paths.$ITER; mkdir -p "$PATHS"
+        for (( p = 0; p < half; p++ )); do
+            ck=${ORDER[p]}; sk=${ORDER[p + half]}
+            check_path p1a_$p $ck 0 $sk 0; check_path p1b_$p $sk 1 $ck 1
+            check_path p2a_$p $ck 0 $sk 1; check_path p2b_$p $sk 0 $ck 1
+        done
+        wait
+        local bad; bad=$(grep -Lx OK "$PATHS"/* | wc -l | tr -d ' ')
+        log "Path checks (egress route, ping, MTU no-fragment): $(( half * 4 - bad )) OK, $bad excluded"
+
+        local DROPS_PRE=$WORK/drops_pre DROPS_POST=$WORK/drops_post
+        collect_drops "$DROPS_PRE"
+        for PHASE in 1 2; do
+            PHASE_OUT=$WORK/phase.$ITER.$PHASE; : > "$PHASE_OUT"
+            [[ $PHASE == 1 ]] && log "Phase 1: A->A and B->B at once" || log "Phase 2: A->B both directions at once"
+            echo "### iteration:${ITER} phase:${PHASE}" >> "$RESULTS"
+            for (( p = 0; p < half; p++ )); do
+                ck=${ORDER[p]}; sk=${ORDER[p + half]}
+                if [[ $PHASE == 1 ]]; then run_path p1a_$p $ck 0 $sk 0; run_path p1b_$p $sk 1 $ck 1
+                else run_path p2a_$p $ck 0 $sk 1; run_path p2b_$p $sk 0 $ck 1; fi
+            done
+            wait
+            column -t < "$PHASE_OUT" | tee -a "$RESULTS"
+            local errs; errs=$(grep -c ',ERROR' "$PHASE_OUT")
+            [[ $errs -gt 0 ]] && log "WARNING: $errs runs in phase $PHASE returned no result (lines with ERROR above)"
+        done
+        collect_drops "$DROPS_POST"
+        local iter_drops; iter_drops=$(compute_drops "$DROPS_PRE" "$DROPS_POST" "iter${ITER}")
+        if [[ -n $iter_drops ]]; then
+            log "Drops during iteration $ITER:"; echo "$iter_drops" | column -t | sed 's/^/#   /' >&2
+            echo "$iter_drops" >> "$DROP_TOTALS"
+        else
+            log "No drop counter increases in iteration $ITER ($(wc -l < "$DROPS_POST" | tr -d ' ') NICs read)"
+        fi
+        echo
+    done
+
+    # --- 7. summary ---
+    local LABEL=${FS_LABEL:-$FIRST_HOST}
+    LABEL=${LABEL//[^A-Za-z0-9_.-]/_}
+    {
+        echo ""
+        echo "=================================================================="
+        echo " $LABEL DATA PLANE VALIDATION SUMMARY: $(date)"
+        echo "=================================================================="
+        local map=$WORK/ipmap
+        for k in "${ELIG[@]}"; do
+            [[ ${RIP[$k,0]} != none ]] && echo "${RIP[$k,0]} ${T_HOST[$k]} A"
+            [[ ${RIP[$k,1]} != none ]] && echo "${RIP[$k,1]} ${T_HOST[$k]} B"
+        done > "$map"
+        if grep -q 'Gbits/sec' "$RESULTS"; then
+            echo "Per-host throughput, worst first (Gbps; each rail averaged over all its runs):"
+            grep 'Gbits/sec' "$RESULTS" | awk -F'[, ]+' -v ok="$(( ${LINE_GBPS:-0} * FS_OK_PCT ))" -v slow="$(( ${LINE_GBPS:-0} * FS_SLOW_PCT ))" '
+                NR==FNR { host[$1]=$2; rail[$1]=$3; next }
+                { for (i = 1; i <= NF; i++) if ($i == "Gbits/sec") { s = $(i-1) + 0; break }
+                  for (j = 1; j <= 2; j++) { ip = $j; sum[host[ip], rail[ip]] += s; cnt[host[ip], rail[ip]]++; seen[host[ip]] = 1 } }
+                END {
+                    print "Host Avg_Gbps Rail_A Rail_B Status"
+                    for (h in seen) {
+                        a = cnt[h,"A"] ? sum[h,"A"]/cnt[h,"A"] : -1; b = cnt[h,"B"] ? sum[h,"B"]/cnt[h,"B"] : -1
+                        t = 0; m = 0; if (a >= 0) {t += a; m++} if (b >= 0) {t += b; m++}
+                        avg = t / m
+                        st = ok == 0 ? "-" : (avg * 100 >= ok ? "OK" : (avg * 100 >= slow ? "SLOW" : "CRITICAL"))
+                        if (m < 2) st = st "(1rail)"
+                        printf "%s %.0f %s %s %s\n", h, avg, (a < 0 ? "-" : sprintf("%.0f", a)), (b < 0 ? "-" : sprintf("%.0f", b)), st
+                    }
+                }' "$map" - | { read -r hdr; echo "$hdr"; sort -k2 -n; } | column -t | sed 's/^/  /'
+        else
+            echo "  No iperf3 results collected."
+        fi
+        echo ""
+        echo "  Hosts tested: ${#ELIG[@]} | Rail IPs down/excluded: ${#DOWN_IP[@]} | Paths skipped: $(wc -l < "$PATH_EXCL" | tr -d ' ') (paths_excluded.txt)"
+        echo "  Runs with no result: $(grep -c ',ERROR' "$RESULTS")"
+        echo "=================================================================="
+    } >&2
+
+    local ts; ts=$(date -u +%Y%m%dT%H%M%SZ)
+    {
+        echo "label=$LABEL"
+        echo "timestamp=$START_TS"
+        echo "end_timestamp=$ts"
+        echo "duration=$FS_DURATION"
+        echo "iterations=$FS_ITER"
+        echo "parallel_streams=$FS_STREAMS"
+        echo "total_hosts=${#ELIG[@]}"
+        echo "targets_input=${#TARGETS[@]}"
+        echo "targets_reachable=${#REACH[@]}"
+        echo "rail_mode=$RAIL_MODE"
+        echo "rail_a=${RAIL_SPEC[0]// /,}"
+        echo "rail_b=${RAIL_SPEC[1]// /,}"
+        echo "line_rate_gbps=${LINE_GBPS:-unknown}"
+        echo "ok_pct=$FS_OK_PCT"
+        echo "slow_pct=$FS_SLOW_PCT"
+        echo "busy_hosts=${#BUSY[@]}"
+        echo "port=$FS_PORT"
+    } > "$COLLECT_DIR/metadata.txt"
+    for k in "${ELIG[@]}"; do
+        echo "${T_HOST[$k]} ${T_TARGET[$k]} ${RIP[$k,0]} ${RIP[$k,1]} ${RNIC[$k,0]} ${RNIC[$k,1]}"
+    done | sort -V > "$COLLECT_DIR/host_list.txt"
+    printf '%s\n' "${!DOWN_IP[@]}" | grep . | sort -V > "$COLLECT_DIR/down_ips.txt"
+
+    local tarball=$FS_OUT_DIR/fabric_sleuth_${LABEL}_${ts}.tar.gz
+    stop_servers
+    DONE=1
+    COPYFILE_DISABLE=1 tar czf "$tarball" -C "$(dirname "$COLLECT_DIR")" "$(basename "$COLLECT_DIR")" || die "tar failed; data left in $COLLECT_DIR"
+    log "Data archive: $tarball ($(du -h "$tarball" | cut -f1))"
+    log "Dashboard:    python3 generate_dashboard.py $tarball"
+    rm -rf "${COLLECT_DIR:?}"
+}
+
+START_TS=$(date -u +%Y%m%dT%H%M%SZ)
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; fi
