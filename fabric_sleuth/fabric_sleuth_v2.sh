@@ -765,7 +765,7 @@ stop_servers() {
 
 cleanup() {
     local rc=$? k   # first: bash 5.1 would otherwise end a piped main with cleanup's last status
-    trap '' INT TERM   # a second Ctrl-C must not cut cleanup short (iperf3 left running)
+    trap '' INT TERM HUP PIPE   # nothing may cut cleanup short: a second signal, or a dead tee (EPIPE, not death)
     stop_servers
     [[ -n $LOCKED ]] && lock_all release
     for k in "${T_TARGET[@]}" "${!REACH_ONLY[@]}"; do
@@ -827,7 +827,8 @@ main() {
     declare -gA T_TARGET T_HOST DISC RNIC RIP RMTU RSTATE STARTED REACH_ONLY DOWN_IP
     trap cleanup EXIT
     # explicit exits so the EXIT trap always runs on Ctrl-C or kill, whatever command was running
-    trap 'exit 130' INT; trap 'exit 143' TERM
+    trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP
+    trap '' PIPE   # a dead log tee must not abort the run: log writes just fail, results go to files
     parse_rails
     log "Begin $(date) | ${#TARGETS[@]} targets | rails: $RAIL_MODE A=${RAIL_SPEC[0]// /,} B=${RAIL_SPEC[1]// /,} | ${FS_DURATION}s x $FS_ITER iterations"
 
@@ -1297,10 +1298,11 @@ START_TS=$(date -u +%Y%m%dT%H%M%SZ)
 # Run when executed or fed on stdin (ssh jump 'bash -s' < script: BASH_SOURCE is empty); not when sourced.
 # stderr is copied to the run log by tee in a pipeline, not a process substitution: bash 5.1's
 # bare `wait` also waits for a process substitution, which never exits while main runs.
-# tee ignores SIGINT so an interrupted run's cleanup can still write.
+# tee ignores INT/TERM/HUP (Ctrl-C, group kill, dropped session) so cleanup can still write.
 if [[ ${#BASH_SOURCE[@]} -eq 0 || ${BASH_SOURCE[0]} == "$0" ]]; then
     FS_RUNLOG=$(mktemp "${TMPDIR:-/tmp}/fs_runlog.XXXXXX") || exit 2
-    { main "$@" 2>&1 1>&3 3>&- | ( trap '' INT; exec tee -a "$FS_RUNLOG" >&2 3>&- ); rc=${PIPESTATUS[0]}; } 3>&1
+    trap ':' INT TERM HUP   # keep waiting for main's cleanup on Ctrl-C or a group kill (a no-op trap, so main gets its own)
+    { main "$@" 2>&1 1>&3 3>&- | ( trap '' INT TERM HUP; exec tee -a "$FS_RUNLOG" >&2 3>&- ); rc=${PIPESTATUS[0]}; } 3>&1
     rm -f "$FS_RUNLOG"
     exit "$rc"
 fi
