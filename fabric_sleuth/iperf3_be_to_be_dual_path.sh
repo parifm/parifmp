@@ -964,4 +964,5 @@ main() {
 }
 
 START_TS=$(date -u +%Y%m%dT%H%M%SZ)
-if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; fi
+# run when executed or fed on stdin (ssh jump 'bash -s' < script: BASH_SOURCE is empty); not when sourced
+if [[ ${#BASH_SOURCE[@]} -eq 0 || ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; fi
