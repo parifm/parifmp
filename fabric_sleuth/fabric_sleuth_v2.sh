@@ -39,6 +39,8 @@ Optional (default)
                    receiver socket, NIC, kernel backlog and unaccounted (likely fabric).
                    With FS_TOS the whole TOS byte, ECN bits included, is sent.
   FS_UDP_DURATION  seconds per UDP run (FS_DURATION)
+  FS_IGNORE_LOCK=1 run even if another fabric_sleuth run holds a host (two runs on the same hosts
+                   kill each other's iperf3 servers and both get garbage)
   FS_MESH=1        before load, ping every tested host's rail IPs from every other one's (same rail and
                    cross-rail; tested hosts only, so other clusters on shared subnets are never
                    probed). Failures go to mesh_failures.txt and the Preflight card.
@@ -339,6 +341,22 @@ done
 wait
 EOF
 
+# Run lock per host: take <id> <info> <max_age_s> | touch <id> | release <id>.
+# take prints OK, or BUSY <holder> when another run touched the lock within max_age.
+read -r -d '' LOCK_SCRIPT <<'EOF'
+L=/tmp/fabric_sleuth.lock
+case $1 in
+take)
+    if [ -f "$L" ] && ! grep -q "^$2 " "$L"; then
+        age=$(( $(date +%s) - $(stat -c %Y "$L") ))
+        if [ "$age" -lt "$4" ]; then echo "BUSY $(cut -d" " -f2- "$L") (lock refreshed ${age}s ago)"; exit 0; fi
+    fi
+    echo "$2 $3" > "$L" && echo OK ;;
+touch) [ -f "$L" ] && grep -q "^$2 " "$L" && touch "$L"; echo OK ;;
+release) [ -f "$L" ] && grep -q "^$2 " "$L" && rm -f "$L"; echo OK ;;
+esac
+EOF
+
 # Rail gateways: rail_ip nic df_size peer... -> "DIRECT" or "GW <ip> OK|MTU|FAIL" per distinct gateway
 # that `ip route get <peer> from <rail_ip>` uses (routed fabrics: /31 or per-rail policy tables).
 read -r -d '' GW_SCRIPT <<'EOF'
@@ -482,6 +500,37 @@ gateway_check() {
         log "WARNING: rail gateways that failed (MTU = answers only small pings):"; echo "$bad" | sed 's/^/#   /' >&2
         echo "$bad" | awk '{print $1, "gateway_" $NF, "rail", $2, $3, "gateway", $5}' >> "$COLLECT_DIR/rail_anomalies.txt"
     fi
+}
+
+# Run lock: take on every tested host before load; another live run (its lock refreshed within
+# about two iterations) stops this one, since each run kills stray iperf3 servers on its hosts.
+take_locks() {
+    local k busy other
+    RUN_ID="$(hostname -s)-$$-$START_TS"
+    local max=$(( 2 * (2 * FS_DURATION + (FS_UDP == 1 ? 2 * FS_UDP_DURATION : 0)) + 300 ))
+    local info="since=$(date -u +%Y-%m-%dT%H:%M:%SZ),from=$(hostname -s),user=$(id -un)"   # no spaces: args are re-split remotely
+    for k in "${ELIG[@]}"; do
+        throttle
+        ( out=$(rbash "${T_TARGET[$k]}" take "$RUN_ID" "$info" "$max" <<<"$LOCK_SCRIPT" 2>&1)
+          echo "${T_HOST[$k]} ${out%%$'\n'*}" > "$WORK/lock.$k" ) &
+    done
+    wait
+    LOCKED=1   # release whatever we took, even if we stop below
+    busy=$(cat "$WORK"/lock.* | grep ' BUSY ')
+    other=$(cat "$WORK"/lock.* | grep -v -E ' (OK|BUSY .*)$')
+    [[ -n $other ]] && { log "WARNING: could not take the run lock on:"; echo "$other" | sed 's/^/#   /' >&2; }
+    [[ -n $busy ]] || return 0
+    if [[ $FS_IGNORE_LOCK == 1 ]]; then
+        log "WARNING: FS_IGNORE_LOCK=1: running although another run holds:"; echo "$busy" | sed 's/^/#   /' >&2
+    else
+        die "another fabric_sleuth run is active on $(echo "$busy" | wc -l | tr -d ' ') hosts (it would lose its iperf3 servers to this one): $(echo "$busy" | head -n 3 | tr '\n' ';') wait for it, or set FS_IGNORE_LOCK=1 if it is dead"
+    fi
+}
+
+lock_all() {  # touch | release on every tested host (only our own lock is changed)
+    local k
+    for k in "${ELIG[@]}"; do rbash "${T_TARGET[$k]}" "$1" "$RUN_ID" <<<"$LOCK_SCRIPT" >> "$WORK/lock.log" 2>&1 & done
+    wait
 }
 
 # FS_MESH=1: every usable rail IP of each tested host pings every other tested host's usable rail IPs.
@@ -718,6 +767,7 @@ cleanup() {
     local rc=$? k   # first: bash 5.1 would otherwise end a piped main with cleanup's last status
     trap '' INT TERM   # a second Ctrl-C must not cut cleanup short (iperf3 left running)
     stop_servers
+    [[ -n $LOCKED ]] && lock_all release
     for k in "${T_TARGET[@]}" "${!REACH_ONLY[@]}"; do
         ssh -O exit -o "ControlPath=$SOCKET_DIR/%C" -l "$FS_SSH_USER" "$k" >> "$WORK/cleanup.log" 2>&1 &
     done
@@ -977,6 +1027,9 @@ main() {
         log "WARNING: no link speed from ethtool and FS_LINE_GBPS unset; no OK/SLOW status"
     fi
 
+    # --- 4b. run lock: a second run on the same hosts would kill this one's iperf3 servers ---
+    take_locks
+
     # --- 5. iperf3 servers ---
     LOADED=1
     log "Stopping stray iperf3 and starting servers on port $FS_PORT..."
@@ -1039,6 +1092,7 @@ main() {
     fi
     for (( ITER = 1; ITER <= FS_ITER; ITER++ )); do
         round_pairs $(( (ITER - 1) % rounds ))
+        lock_all touch
         PATHS_PLANNED=$(( PATHS_PLANNED + 4 * ${#PC[@]} ))
         log "============ Iteration $ITER of $FS_ITER (${#PC[@]} pairs) ============"
         [[ -n $SITOUT ]] && log "Sits out this iteration (odd host count): ${T_HOST[$SITOUT]}"
