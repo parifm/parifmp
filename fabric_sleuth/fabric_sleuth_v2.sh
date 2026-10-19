@@ -67,7 +67,7 @@ exit 0 = COMPLETE, 3 = PARTIAL, 4 = NONE (no throughput result at all), 2 = stop
 EOF
 }
 
-die() { echo "ERROR: $*" >&2; exit 2; }
+die() { echo "ERROR: $*" >&2; echo "RESULT coverage=STOPPED ($*)" >&2; exit 2; }
 log() { echo "# $*" >&2; }
 
 # ---------- target expansion (pure bash, no ssh) ----------
@@ -508,15 +508,24 @@ mesh_check() {
     log "Mesh: $total pings, $fails failed"
     MESH_PINGS=$total; MESH_FAILS=$fails
     (( fails )) || return 0
-    # a destination failing from many sources points at that rail; scattered failures at paths
     local ip; for ip in "${!host_of[@]}"; do echo "$ip ${host_of[$ip]}"; done > "$WORK/meship"
-    # sources for a destination = every rail IP except the destination host's own
-    awk 'FNR == 1 {f++} f == 1 {c[$2]++; all++; next}
-         {n[$4]++; h[$4] = $3}
-         END {for (d in n) printf "%s mesh_unreachable rail IP %s did not answer %d of %d pinging rail IPs\n", h[d], d, n[d], all - c[h[d]]}' \
-        "$WORK/meship" "$COLLECT_DIR/mesh_failures.txt" | sort -k7 -rn >> "$COLLECT_DIR/rail_anomalies.txt"
-    log "WARNING: mesh failures by destination (worst first):"
-    awk '{n[$4 " (" $3 ")"]++} END {for (d in n) print n[d], d}' "$COLLECT_DIR/mesh_failures.txt" | sort -rn | head -n 10 | sed 's/^/#   /' >&2
+    # A source whose pings fail to every peer gets no replies at all (its inbound ICMP or rail is
+    # blocked): report it once as the source and keep its failures out of the destination counts.
+    # Otherwise a destination failing from many sources points at that rail.
+    # Peers of an IP = every rail IP except its own host's; sources of a destination likewise,
+    # minus the silent sources on other hosts.
+    awk 'FNR == 1 {f++}
+         f == 1 {hof[$1] = $2; c[$2]++; all++; next}
+         {m++; s[m] = $2; d[m] = $4; fs[$2]++}
+         END {
+             for (x in fs) if (fs[x] >= all - c[hof[x]]) {dead[x] = 1; nd++; deadon[hof[x]]++}
+             for (x in dead) printf "%s mesh_no_replies rail IP %s got no reply from any of its %d peers (inbound ICMP blocked or rail down on that host)\n", hof[x], x, all - c[hof[x]]
+             for (i = 1; i <= m; i++) if (!(s[i] in dead)) n[d[i]]++
+             for (x in n) printf "%s mesh_unreachable rail IP %s did not answer %d of %d pinging rail IPs\n", hof[x], x, n[x], all - c[hof[x]] - (nd - deadon[hof[x]])
+         }' "$WORK/meship" "$COLLECT_DIR/mesh_failures.txt" | sort -k2,2 -k7,7rn > "$WORK/mesh_anom"
+    cat "$WORK/mesh_anom" >> "$COLLECT_DIR/rail_anomalies.txt"
+    log "WARNING: mesh findings (silent sources first, then destinations, worst first):"
+    sed 's/^/#   /' "$WORK/mesh_anom" | head -n 10 >&2
 }
 
 # LLDP: a rail NIC whose switch most hosts reach on the other rail is cabled to the wrong rail.
@@ -706,7 +715,7 @@ stop_servers() {
 }
 
 cleanup() {
-    local k
+    local rc=$? k   # first: bash 5.1 would otherwise end a piped main with cleanup's last status
     trap '' INT TERM   # a second Ctrl-C must not cut cleanup short (iperf3 left running)
     stop_servers
     for k in "${T_TARGET[@]}" "${!REACH_ONLY[@]}"; do
@@ -718,6 +727,7 @@ cleanup() {
         else rm -rf "${COLLECT_DIR:?}"; fi
     fi
     rm -rf "${SOCKET_DIR:?}" "${WORK:?}"
+    exit $rc
 }
 
 # ======================================================================
@@ -1218,13 +1228,15 @@ main() {
     local abs; abs=$(cd "$(dirname "$tarball")" && pwd)/$(basename "$tarball")
     if [[ -n $SSH_CONNECTION ]]; then   # ran on a jump host: say how to fetch it
         local srv; srv=$(awk '{print $3}' <<<"$SSH_CONNECTION")
+        # SSH_CONNECTION shows the address this host sees; behind NAT that is private, so name the host too
         log "Fetch and render: scp $(id -un)@$srv:$abs . && python3 generate_dashboard_v2.py $(basename "$tarball")"
+        log "  ($srv is this jump host's own address; from outside use the address you ssh to, e.g. $(hostname -f 2>&1 | head -n1))"
     else
         log "Render: python3 generate_dashboard_v2.py $abs"
     fi
     rm -rf "${COLLECT_DIR:?}"
     echo "$RESULT_LINE" >&2
-    return $cov_rc
+    exit $cov_rc   # exit, not return: bash 5.1 drops a piped function's return status under an EXIT trap
 }
 
 START_TS=$(date -u +%Y%m%dT%H%M%SZ)

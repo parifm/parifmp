@@ -265,7 +265,8 @@ def generate_html(data, output_path):
         kinds = {'swapped_nics': 'Rail NICs swapped', 'rail_nic_overlap': 'Rail NIC names mixed',
                  'lldp_wrong_rail': "Cabled to the other rail's switch", 'mtu_mismatch': 'MTU differs on a rail',
                  'gateway_FAIL': 'Rail gateway not answering', 'gateway_MTU': 'Rail gateway answers small pings only',
-                 'mesh_unreachable': 'Rail IP unreachable in the mesh'}
+                 'mesh_unreachable': 'Rail IP unreachable in the mesh',
+                 'mesh_no_replies': 'Rail IP gets no replies in the mesh'}
         rows = ''.join(f"<tr><td>{escape(kinds.get(a[1], a[1]) if len(a) > 1 else '')}</td><td>{escape(a[0])}</td>"
                        f"<td>{escape(a[2] if len(a) > 2 else '')}</td></tr>" for a in data.get('anomalies', []))
         bad = len(data.get('anomalies', []))
