@@ -344,16 +344,20 @@ EOF
 # Run lock per host: take <id> <info> <max_age_s> | touch <id> | release <id>.
 # take prints OK, or BUSY <holder> when another run touched the lock within max_age.
 read -r -d '' LOCK_SCRIPT <<'EOF'
-L=/tmp/fabric_sleuth.lock
+L=${FS_LOCK_FILE:-/tmp/fabric_sleuth.lock}
+mine() { [ -f "$L" ] && grep -q "^$1 " "$L"; }
 case $1 in
 take)
-    if [ -f "$L" ] && ! grep -q "^$2 " "$L"; then
-        age=$(( $(date +%s) - $(stat -c %Y "$L") ))
-        if [ "$age" -lt "$4" ]; then echo "BUSY $(cut -d" " -f2- "$L") (lock refreshed ${age}s ago)"; exit 0; fi
-    fi
-    echo "$2 $3" > "$L" && echo OK ;;
-touch) [ -f "$L" ] && grep -q "^$2 " "$L" && touch "$L"; echo OK ;;
-release) [ -f "$L" ] && grep -q "^$2 " "$L" && rm -f "$L"; echo OK ;;
+    # atomic create: set -C (noclobber) refuses an existing file, so two runs cannot both win
+    if out=$( (set -C; echo "$2 $3" > "$L") 2>&1 ); then echo OK; exit 0; fi
+    mine "$2" && { echo OK; exit 0; }
+    age=$(( $(date +%s) - $(date -r "$L" +%s) ))
+    if [ "$age" -lt "$4" ]; then echo "BUSY $(cut -d" " -f2- "$L") (lock refreshed ${age}s ago)"; exit 0; fi
+    # stale lock: replace it whole, then re-read; of two runs doing this, only the last writer keeps it
+    echo "$2 $3" > "$L.$$" && mv -f "$L.$$" "$L"; sleep 1
+    if mine "$2"; then echo OK; else echo "BUSY $(cut -d" " -f2- "$L") (took over a stale lock first)"; fi ;;
+touch) mine "$2" && touch "$L"; echo OK ;;
+release) mine "$2" && rm -f "$L"; echo OK ;;
 esac
 EOF
 
@@ -983,6 +987,8 @@ main() {
     else
         log "All rails on all ${#ELIG[@]} hosts have an address and link"
     fi
+    # run lock before any preflight: a second run on the same hosts would kill this one's iperf3 servers
+    take_locks
     : > "$COLLECT_DIR/rail_anomalies.txt"   # preflight findings: host kind detail...
     # one MTU per rail expected; name the odd hosts (their paths fail the no-fragment check)
     local rr
@@ -1029,9 +1035,7 @@ main() {
         log "WARNING: no link speed from ethtool and FS_LINE_GBPS unset; no OK/SLOW status"
     fi
 
-    # --- 4b. run lock: a second run on the same hosts would kill this one's iperf3 servers ---
-    take_locks
-
+    lock_all touch   # preflight can be long (mesh); refresh before load
     # --- 5. iperf3 servers ---
     LOADED=1
     log "Stopping stray iperf3 and starting servers on port $FS_PORT..."
