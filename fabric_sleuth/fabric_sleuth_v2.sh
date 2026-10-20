@@ -310,7 +310,7 @@ for nic in "$@"; do
 done
 EOF
 
-# Per-priority, PFC/pause and ECN/CNP counters for the rail NICs ($@): "host_nic counter value".
+# Per-priority, PFC/pause, ECN/CNP and NIC discard counters for the rail NICs ($@): "host_nic counter value".
 # Names differ by driver (mlx5 rx_prio3_pause, ice rx_priority_3_xon.nic, bnxt pfc_*); per-queue/ring lines
 # (chN_, rxN_, txN_, _qN, queue) skipped. RoCE ECN/CNP/retransmit counters live only in the RDMA port's sysfs, printed as "rdma:<name>".
 # FS_SYSFS (default /sys) is a test hook.
@@ -320,7 +320,7 @@ for nic in "$@"; do
     [ "$nic" = - ] && continue
     ethtool -S "$nic" 2>&1 | awk -v k="${h}_${nic}" '$2 ~ /^[0-9]+$/ && $1 ~ /:$/ {
         n = $1; sub(/:$/, "", n); l = tolower(n)
-        if (l ~ /prio|pri[0-9]|pfc|pause|xon|xoff|ecn|cnp/ && l !~ /ch[0-9]|_q[0-9]|queue|^[rt]x[0-9]+_/) print k, n, $2 }'
+        if (l ~ /prio|pri[0-9]|pfc|pause|xon|xoff|ecn|cnp|discard|out_of_buffer/ && l !~ /ch[0-9]|_q[0-9]|queue|^[rt]x[0-9]+_/) print k, n, $2 }'
     # the RDMA port whose default GID is on this NIC, or on its only lower device (a VLAN's parent)
     phys=$nic; n=0
     for l in "$sys/class/net/$nic"/lower_*; do [ -e "$l" ] && { phys=${l##*lower_}; n=$((n + 1)); }; done
@@ -1226,10 +1226,11 @@ main() {
                       if (!n) printf "no per-priority byte counters" }' "$WORK/nicmap" "$WORK/prio_delta")"
             awk 'tolower($3) !~ /byte|packet/ || $3 ~ /^rdma:/' "$WORK/prio_delta" | sort -k4 -rn > "$WORK/prio_events"
             if [[ -s $WORK/prio_events ]]; then
-                log "Pause/ECN/discard/RDMA counters that rose (top 10 of $(wc -l < "$WORK/prio_events" | tr -d ' ')):"
+                local ne; ne=$(wc -l < "$WORK/prio_events" | tr -d ' ')
+                log "Pause/ECN/discard/RDMA counters that rose ($( (( ne > 10 )) && echo "top 10 of $ne" || echo "$ne")):"
                 head -n 10 "$WORK/prio_events" | column -t | sed 's/^/#   /' >&2
             else
-                log "No pause/ECN/discard/RDMA counter rose in iteration $ITER ($(awk '$2 ~ /^rdma:/' "$WORK/prio_post" | wc -l | tr -d ' ') RDMA counters read)"
+                log "No pause/ECN/discard/RDMA counter rose in iteration $ITER ($(wc -l < "$WORK/prio_post" | tr -d ' ') counters read, $(awk '$2 ~ /^rdma:/' "$WORK/prio_post" | wc -l | tr -d ' ') of them RDMA)"
             fi
         else
             log "No priority/pause/ECN/RDMA counter rose in iteration $ITER ($(wc -l < "$WORK/prio_post" | tr -d ' ') counters read, $(awk '$2 ~ /^rdma:/' "$WORK/prio_post" | wc -l | tr -d ' ') of them RDMA)"
