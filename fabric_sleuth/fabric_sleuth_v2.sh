@@ -38,6 +38,10 @@ Optional (default)
   FS_STREAMS       iperf3 parallel streams, >=2 (16)
   FS_TOS           IP TOS byte for the test traffic, 0-255 (iperf3 -S), e.g. 106 = DSCP 26
                    + ECT(0); TCP keeps the DSCP, the kernel sets the ECN bits (unset: 0)
+  FS_SKIP_IPERF=1  no iperf3 at all, for a cluster whose I/O can't stop (WEKA running): every other check
+                   runs (discovery, rails, path checks for every planned path, mesh, LLDP, NIC/FEC/priority
+                   and drop counters, system info, host-side receive), the counters over one FS_DURATION
+                   window of the cluster's own traffic. The busy check reports but doesn't stop the run.
   FS_UDP=1         after the TCP phases, run the same pairs with UDP and no rate cap
                    (iperf3 -u -b 0, datagrams sized to the path MTU). Loss is split into
                    receiver socket, NIC, kernel backlog and unaccounted (likely fabric).
@@ -819,6 +823,7 @@ run_path() {
         log "  skip ${T_HOST[$sk]} ${RIP[$sk,$sr]} -> ${T_HOST[$dk]} ${RIP[$dk,$dr]}: $st"
         return
     fi
+    if [[ $mode == check ]]; then echo "${RIP[$sk,$sr]} ${RIP[$dk,$dr]}" >> "$WORK/paths_ok"; return; fi   # FS_SKIP_IPERF=1
     if [[ $mode == udp ]]; then
         local m1=${RMTU[$sk,$sr]:-1500} m2=${RMTU[$dk,$dr]:-1500}
         local len=$(( (m1 < m2 ? m1 : m2) - 28 ))   # largest datagram that needs no fragmenting
@@ -895,6 +900,14 @@ hostctr_delta() {
     # who answered this read, and with AER counters: a counter never read shows as "-" in host_rx.txt, not 0
     awk '{n[$1]++; if ($2 ~ /^aer_/) a[$1] = 1} END {for (h in n) print h, ((h in a) ? 1 : 0)}' "$3" >> "$WORK/hc_reads"
     HC_READS=$(( HC_READS + 1 ))
+}
+
+# hc_log what snapshot: one line on the receive drop counters in $WORK/hc_delta (squeezes stay in the table only)
+hc_log() {
+    local hd; hd=$(awk '$3 ~ /^(softnet_dropped|TCPRcvQDrop|TCPBacklogDrop|TCPOFODrop|RcvPruned|OfoPruned|TCPZeroWindowDrop|TCPMemoryPressures|aer_)/' "$WORK/hc_delta" | sort -k4 -rn)
+    if [[ -n $hd ]]; then
+        log "  Host receive drops in $1 ($(echo "$hd" | wc -l | tr -d ' ') counters rose; top 5): $(echo "$hd" | head -n 5 | awk '{printf "%s%s %s +%d", s, $2, $3, $4; s = "; "}')"
+    else log "  No host receive drop counter rose in $1 ($(wc -l < "$2" | tr -d ' ') counters read)"; fi
 }
 
 # Kernel log per host since its own sysinfo epoch -> $SI/<host>/kernel-log
@@ -1194,7 +1207,7 @@ cleanup() {
 
 # Every FS_* setting this tool reads. Any other FS_* in the environment is a typo that would be silently
 # ignored (a dropped letter, say), so it stops the run. A regress test keeps the list complete.
-FS_KNOWN="FS_BUSY_CHECK FS_BUSY_OK FS_CROSS_MAX FS_CROSS_RAIL FS_DURATION FS_EXPECT_HOSTS FS_HOSTS FS_IGNORE_LOCK FS_ITER FS_LABEL FS_LINE_GBPS FS_LOCK_FILE FS_MAX_TARGETS FS_MESH FS_NICS FS_OK_PCT FS_OUT_DIR FS_PORT FS_RAIL_A FS_RAIL_B FS_RAILS FS_RUNLOG FS_SLOW_PCT FS_SPINE_GBPS FS_SPINE_LINKS FS_SPINES FS_SSH_PARALLEL FS_SSH_RETRY_PARALLEL FS_SSH_USER FS_STREAMS FS_SYSFS FS_SYSINFO_TIMEOUT FS_TOS FS_UDP FS_UDP_DURATION"
+FS_KNOWN="FS_BUSY_CHECK FS_BUSY_OK FS_CROSS_MAX FS_CROSS_RAIL FS_DURATION FS_EXPECT_HOSTS FS_HOSTS FS_IGNORE_LOCK FS_ITER FS_LABEL FS_LINE_GBPS FS_LOCK_FILE FS_MAX_TARGETS FS_MESH FS_NICS FS_OK_PCT FS_OUT_DIR FS_PORT FS_RAIL_A FS_RAIL_B FS_RAILS FS_RUNLOG FS_SKIP_IPERF FS_SLOW_PCT FS_SPINE_GBPS FS_SPINE_LINKS FS_SPINES FS_SSH_PARALLEL FS_SSH_RETRY_PARALLEL FS_SSH_USER FS_STREAMS FS_SYSFS FS_SYSINFO_TIMEOUT FS_TOS FS_UDP FS_UDP_DURATION"
 
 # edit_distance a b: Levenshtein distance, for the "did you mean" hint
 edit_distance() {
@@ -1237,10 +1250,12 @@ main() {
     : "${FS_BUSY_CHECK:=$WEKA_BUSY_CHECK}"
     [[ $FS_BUSY_CHECK == none ]] && FS_BUSY_CHECK=""
     [[ $1 =~ ^[0-9]+$ ]] && FS_DURATION=$1
-    : "${FS_DURATION:=120}" "${FS_UDP:=0}" "${FS_MESH:=0}"
+    : "${FS_DURATION:=120}" "${FS_UDP:=0}" "${FS_MESH:=0}" "${FS_SKIP_IPERF:=0}"
     : "${FS_UDP_DURATION:=$FS_DURATION}"
     [[ $FS_UDP == 0 || $FS_UDP == 1 ]] || die "FS_UDP must be 0 or 1, got '$FS_UDP'"
     [[ $FS_MESH == 0 || $FS_MESH == 1 ]] || die "FS_MESH must be 0 or 1, got '$FS_MESH'"
+    [[ $FS_SKIP_IPERF == 0 || $FS_SKIP_IPERF == 1 ]] || die "FS_SKIP_IPERF must be 0 or 1, got '$FS_SKIP_IPERF'"
+    (( FS_SKIP_IPERF && FS_UDP == 1 )) && die "FS_UDP=1 is a load test; FS_SKIP_IPERF=1 sends no load: set one of them"
     [[ -z $FS_CROSS_RAIL || $FS_CROSS_RAIL == 0 || $FS_CROSS_RAIL == 1 ]] || die "FS_CROSS_RAIL must be 0 or 1, got '$FS_CROSS_RAIL'"
     [[ -z $FS_CROSS_RAIL ]] && FS_CROSS_RAIL=1
     ITER_ALL=0; [[ $FS_ITER == all ]] && { ITER_ALL=1; FS_ITER=1; }   # 2 x the pairing rounds, set once the hosts are known
@@ -1405,13 +1420,14 @@ main() {
         [[ -s $COLLECT_DIR/excluded.txt ]] && { log "Left out (first 20):"; head -n 20 "$COLLECT_DIR/excluded.txt" | sed 's/^/#   /' >&2; }
         die "need at least 2 hosts on the rails, found ${#ELIG[@]}"
     fi
-    (( ${#NO_IPERF[@]} == 0 )) || die "iperf3 missing on ${#NO_IPERF[@]} hosts: ${NO_IPERF[*]}"
+    (( ${#NO_IPERF[@]} == 0 || FS_SKIP_IPERF )) || die "iperf3 missing on ${#NO_IPERF[@]} hosts: ${NO_IPERF[*]}"
     if (( ${#BUSY[@]} > 0 )); then
-        if [[ $FS_BUSY_OK != 1 ]]; then
+        if (( FS_SKIP_IPERF )); then
+            log "${#BUSY[@]} hosts in use per FS_BUSY_CHECK: fine with FS_SKIP_IPERF=1 (no test load is sent)"
+        elif [[ $FS_BUSY_OK != 1 ]]; then
             local nb=${#BUSY[@]}; mapfile -t BUSY < <(printf "%s\n" "${BUSY[@]}" | sort -V)
-            die "FS_BUSY_CHECK: $nb hosts in use or check failed$( (( nb > 10 )) && echo " (first 10 of $nb)"): ${BUSY[*]:0:10}. Line-rate load can starve cluster heartbeats and get nodes evicted. Stop the cluster's I/O and set FS_BUSY_OK=1 to proceed."
-        fi
-        log "WARNING: ${#BUSY[@]} hosts in use per FS_BUSY_CHECK; FS_BUSY_OK=1 given"
+            die "FS_BUSY_CHECK: $nb hosts in use or check failed$( (( nb > 10 )) && echo " (first 10 of $nb)"): ${BUSY[*]:0:10}. Line-rate load can starve cluster heartbeats and get nodes evicted. Stop the cluster's I/O and set FS_BUSY_OK=1 to proceed, or set FS_SKIP_IPERF=1 to run every check but the bandwidth runs."
+        else log "WARNING: ${#BUSY[@]} hosts in use per FS_BUSY_CHECK; FS_BUSY_OK=1 given"; fi
         for k in "${ELIG[@]}"; do
             echo "== ${T_HOST[$k]}"; section "${DISC[$k]}" busy
         done > "$COLLECT_DIR/busy_check.txt"
@@ -1520,34 +1536,38 @@ main() {
         END { printf "%d NICs read; rx ring below its maximum on %d, PCIe link below its maximum on %d", n, r, p }' "$WORK/rxcfg")"
     # --- 5. iperf3 servers ---
     LOADED=1
-    log "Stopping stray iperf3 and starting servers on port $FS_PORT..."
-    for k in "${ELIG[@]}"; do STARTED[$k]=1; done; save_state
-    for k in "${ELIG[@]}"; do
-        local ips=()
-        for r in 0 1; do rail_ok $k $r && ips+=("${RIP[$k,$r]}"); done
-        rbash "${T_TARGET[$k]}" "$FS_PORT" "${ips[@]}" <<<"$SERVER_SCRIPT" >> "$RUNLOG_SSH" 2>&1 &
-    done
-    wait
-    for k in "${ELIG[@]}"; do
-        ( for i in $(seq 20); do
-              l=$(rsh "${T_TARGET[$k]}" ss -Htln 2>&1)
-              all=1
-              for r in 0 1; do rail_ok $k $r && [[ $l != *"${RIP[$k,$r]}:$FS_PORT "* ]] && all=0; done
-              (( all )) && exit 0
-              sleep 0.5
-          done
-          echo "$k" ) > "$WORK/srv.$k" &
-    done
-    wait
-    for k in "${ELIG[@]}"; do
-        if [[ -s $WORK/srv.$k ]]; then
-            for r in 0 1; do
-                rail_ok $k $r || continue
-                RSTATE[$k,$r]="iperf3 server not listening on ${RIP[$k,$r]}:$FS_PORT"; DOWN_IP[${RIP[$k,$r]}]=1
-            done
-            log "WARNING: ${T_HOST[$k]}: iperf3 server not listening; its paths are skipped"
-        fi
-    done
+    if (( FS_SKIP_IPERF )); then
+        log "FS_SKIP_IPERF=1: no iperf3 servers, no load; path checks, counters and system info only"; save_state
+    else
+        log "Stopping stray iperf3 and starting servers on port $FS_PORT..."
+        for k in "${ELIG[@]}"; do STARTED[$k]=1; done; save_state
+        for k in "${ELIG[@]}"; do
+            local ips=()
+            for r in 0 1; do rail_ok $k $r && ips+=("${RIP[$k,$r]}"); done
+            rbash "${T_TARGET[$k]}" "$FS_PORT" "${ips[@]}" <<<"$SERVER_SCRIPT" >> "$RUNLOG_SSH" 2>&1 &
+        done
+        wait
+        for k in "${ELIG[@]}"; do
+            ( for i in $(seq 20); do
+                  l=$(rsh "${T_TARGET[$k]}" ss -Htln 2>&1)
+                  all=1
+                  for r in 0 1; do rail_ok $k $r && [[ $l != *"${RIP[$k,$r]}:$FS_PORT "* ]] && all=0; done
+                  (( all )) && exit 0
+                  sleep 0.5
+              done
+              echo "$k" ) > "$WORK/srv.$k" &
+        done
+        wait
+        for k in "${ELIG[@]}"; do
+            if [[ -s $WORK/srv.$k ]]; then
+                for r in 0 1; do
+                    rail_ok $k $r || continue
+                    RSTATE[$k,$r]="iperf3 server not listening on ${RIP[$k,$r]}:$FS_PORT"; DOWN_IP[${RIP[$k,$r]}]=1
+                done
+                log "WARNING: ${T_HOST[$k]}: iperf3 server not listening; its paths are skipped"
+            fi
+        done
+    fi
 
     # --- 6. iterations ---
     local RESULTS=$COLLECT_DIR/iperf3_results.txt DROP_TOTALS=$COLLECT_DIR/packet_drops.txt
@@ -1571,7 +1591,7 @@ main() {
     (( FS_ITER > 2 * rounds )) && log "Iterations past $(( 2 * rounds )) repeat the pairings from the start"
     [[ -n $FS_TOS ]] && log "Marking: iperf3 -S $FS_TOS = DSCP $(( FS_TOS >> 2 )), ECN bits $(( FS_TOS & 3 )) (TCP: the kernel owns the ECN bits)"
     : > "$COLLECT_DIR/pairs.txt"; : > "$COLLECT_DIR/prio_counters.txt"; : > "$COLLECT_DIR/fec_rates.txt"; : > "$COLLECT_DIR/host_counters.txt"
-    : > "$WORK/hc_reads"; HC_READS=0
+    : > "$WORK/hc_reads"; HC_READS=0; : > "$WORK/paths_ok"
     # rail IP -> host/rail, and host_nic -> host, for the summary and UDP loss placement
     for k in "${ELIG[@]}"; do
         [[ ${RIP[$k,0]} != none ]] && echo "${RIP[$k,0]} ${T_HOST[$k]} A"
@@ -1617,32 +1637,43 @@ main() {
         fi
         local bad nchk; bad=$(grep -Lx OK "$PATHS"/* | wc -l | tr -d ' '); nchk=$(ls "$PATHS" | wc -l | tr -d ' ')
         log "Path checks (egress route, ping, MTU no-fragment): $(( nchk - bad )) OK, $bad excluded"
+        if (( FS_SKIP_IPERF )); then   # every planned path's check is recorded; the counters get one window, at the end
+            for (( p = 0; p < ${#PC[@]}; p++ )); do
+                ck=${PC[p]}; sk=${PS[p]}; PHASE=1; run_path p1a_$p $ck 0 $sk 0 check; run_path p1b_$p $sk 1 $ck 1 check
+                [[ $CROSS == on ]] && { PHASE=2; xpaths $p; run_path p2a_$p "${X1[@]}" check; run_path p2b_$p "${X2[@]}" check; }
+            done
+            (( ITER < FS_ITER )) && { echo; continue; }
+        fi
 
         local DROPS_PRE=$WORK/drops_pre DROPS_POST=$WORK/drops_post
         collect_drops "$DROPS_PRE"
         collect_counters "$PRIO_SCRIPT" "$WORK/prio_pre"
         collect_counters "$FEC_SCRIPT" "$WORK/fec_pre"; local fec_t0; fec_t0=$(date +%s)
         collect_counters "$HOSTCTR_SCRIPT" "$WORK/hc.pre"; local hc_prev=$WORK/hc.pre
-        for PHASE in 1 2; do
-            PHASE_OUT=$WORK/phase.$ITER.$PHASE; : > "$PHASE_OUT"
-            if [[ $PHASE == 2 && $CROSS != on ]]; then log "Phase 2: skipped (cross-rail $CROSS)"; continue; fi
-            [[ $PHASE == 1 ]] && log "Phase 1: A->A and B->B at once" || log "Phase 2: cross-rail, A->B and B->A at once"
-            if [[ $PHASE == 1 ]]; then
-                echo "### iteration:${ITER} phase:${PHASE}" >> "$RESULTS"
-                for (( p = 0; p < ${#PC[@]}; p++ )); do
-                    ck=${PC[p]}; sk=${PS[p]}; run_path p1a_$p $ck 0 $sk 0; run_path p1b_$p $sk 1 $ck 1
-                done
-                wait
-                column -t < "$PHASE_OUT" | tee -a "$RESULTS"
-            else xwaves "$RESULTS"; fi
-            local errs; errs=$(grep -c ',ERROR' "$PHASE_OUT")
-            [[ $errs -gt 0 ]] && log "WARNING: $errs runs in phase $PHASE returned no result (lines with ERROR above)"
-            collect_counters "$HOSTCTR_SCRIPT" "$WORK/hc.$PHASE"; hostctr_delta "iter${ITER}_p$PHASE" "$hc_prev" "$WORK/hc.$PHASE"; hc_prev=$WORK/hc.$PHASE
-            local hd; hd=$(awk '$3 ~ /^(softnet_dropped|TCPRcvQDrop|TCPBacklogDrop|TCPOFODrop|RcvPruned|OfoPruned|TCPZeroWindowDrop|TCPMemoryPressures|aer_)/' "$WORK/hc_delta" | sort -k4 -rn)
-            if [[ -n $hd ]]; then
-                log "  Host receive drops in phase $PHASE ($(echo "$hd" | wc -l | tr -d ' ') counters rose; top 5): $(echo "$hd" | head -n 5 | awk '{printf "%s%s %s +%d", s, $2, $3, $4; s = "; "}')"
-            else log "  No host receive drop counter rose in phase $PHASE ($(wc -l < "$WORK/hc.$PHASE" | tr -d ' ') counters read)"; fi
-        done
+        if (( FS_SKIP_IPERF )); then
+            log "Observation window: ${FS_DURATION}s with no test load (FS_SKIP_IPERF=1); the counter changes below are the cluster's own traffic"
+            sleep "$FS_DURATION"
+            collect_counters "$HOSTCTR_SCRIPT" "$WORK/hc.obs"; hostctr_delta "iter${ITER}_obs" "$hc_prev" "$WORK/hc.obs"
+            hc_log "the observation window" "$WORK/hc.obs"
+        else
+            for PHASE in 1 2; do
+                PHASE_OUT=$WORK/phase.$ITER.$PHASE; : > "$PHASE_OUT"
+                if [[ $PHASE == 2 && $CROSS != on ]]; then log "Phase 2: skipped (cross-rail $CROSS)"; continue; fi
+                [[ $PHASE == 1 ]] && log "Phase 1: A->A and B->B at once" || log "Phase 2: cross-rail, A->B and B->A at once"
+                if [[ $PHASE == 1 ]]; then
+                    echo "### iteration:${ITER} phase:${PHASE}" >> "$RESULTS"
+                    for (( p = 0; p < ${#PC[@]}; p++ )); do
+                        ck=${PC[p]}; sk=${PS[p]}; run_path p1a_$p $ck 0 $sk 0; run_path p1b_$p $sk 1 $ck 1
+                    done
+                    wait
+                    column -t < "$PHASE_OUT" | tee -a "$RESULTS"
+                else xwaves "$RESULTS"; fi
+                local errs; errs=$(grep -c ',ERROR' "$PHASE_OUT")
+                [[ $errs -gt 0 ]] && log "WARNING: $errs runs in phase $PHASE returned no result (lines with ERROR above)"
+                collect_counters "$HOSTCTR_SCRIPT" "$WORK/hc.$PHASE"; hostctr_delta "iter${ITER}_p$PHASE" "$hc_prev" "$WORK/hc.$PHASE"; hc_prev=$WORK/hc.$PHASE
+                hc_log "phase $PHASE" "$WORK/hc.$PHASE"
+            done
+        fi
         [[ $FS_UDP == 1 ]] && udp_phases
         collect_drops "$DROPS_POST"
         local nr; nr=$(wc -l < "$DROPS_POST" | tr -d ' ')   # "0 drops" only means something if NICs were read
@@ -1735,7 +1766,9 @@ main() {
             cross_summary "$map" "$RESULTS"
             uplink_summary "$map" "$LLDP_DATA" "$NIC_DIAG" "$RESULTS"
         else
-            echo "  No iperf3 results collected."
+            if (( FS_SKIP_IPERF )); then
+                echo "Bandwidth not tested (FS_SKIP_IPERF=1). Path checks (route, ping, MTU no-fragment): $(wc -l < "$WORK/paths_ok" | tr -d ' ') of $PATHS_PLANNED planned OK; the rest are in paths_excluded.txt."
+            else echo "  No iperf3 results collected."; fi
         fi
         echo ""
         # receive side: flagged hosts only; every host's row is in host_rx.txt and on the dashboard
@@ -1743,7 +1776,7 @@ main() {
         echo "Host-side receive: $nfl of $nrx hosts flagged (host_rx.txt; PCIe as GT/s x width, current/max; CPU: iperf3 process %, max over runs, and per thread (iperf3 3.16+: one thread per stream), flagged at 90):"
         (( nfl > 0 )) && awk 'NR == 1 || $NF != "-"' "$COLLECT_DIR/host_rx.txt" | column -t | sed 's/^/  /'
         echo ""
-        echo "  Hosts on the rails: ${#ELIG[@]}, with a result: $(grep 'Gbits/sec' "$RESULTS" | awk -F'[, ]+' 'NR==FNR {h[$1]=$2; next} {print h[$1]; print h[$2]}' "$WORK/ipmap" - | sort -u | grep -c .) | Rails unusable: $(awk 'NR > 1 {n += ($6 != "ok") + ($10 != "ok")} END {print n + 0}' "$COLLECT_DIR/rails.txt") (rails.txt) | TCP paths skipped: $(awk '$2 ~ /^[12]$/' "$PATH_EXCL" | wc -l | tr -d ' ') (paths_excluded.txt)"
+        echo "  Hosts on the rails: ${#ELIG[@]}, $( (( FS_SKIP_IPERF )) && echo "with a passed path check: $(awk 'NR==FNR {h[$1]=$2; next} {print h[$1]; print h[$2]}' "$WORK/ipmap" "$WORK/paths_ok" | sort -u | grep -c .)" || echo "with a result: $(grep 'Gbits/sec' "$RESULTS" | awk -F'[, ]+' 'NR==FNR {h[$1]=$2; next} {print h[$1]; print h[$2]}' "$WORK/ipmap" - | sort -u | grep -c .)") | Rails unusable: $(awk 'NR > 1 {n += ($6 != "ok") + ($10 != "ok")} END {print n + 0}' "$COLLECT_DIR/rails.txt") (rails.txt) | TCP paths skipped: $(awk '$2 ~ /^[12]$/' "$PATH_EXCL" | wc -l | tr -d ' ') (paths_excluded.txt)"
         echo "  Runs with no result: $(grep -c ',ERROR' "$RESULTS")"
         echo "  Directed NIC paths planned: ${#DIRECTED[@]} of $DIRECTED_TOTAL$( (( ${#DIRECTED[@]} < DIRECTED_TOTAL )) && echo " (all of them: FS_ITER=all)")"
         if [[ $FS_UDP == 1 ]]; then
@@ -1772,8 +1805,13 @@ main() {
     if [[ -n $FS_EXPECT_HOSTS ]]; then expect=$FS_EXPECT_HOSTS
     elif (( INPUT_RANGES )); then expect=${#ELIG[@]}
     else expect=$(( ${#TARGETS[@]} - dups )); fi
-    hosts_tested=$(grep 'Gbits/sec' "$RESULTS" | awk -F'[, ]+' 'NR==FNR {h[$1]=$2; next} {print h[$1]; print h[$2]}' "$WORK/ipmap" - | sort -u | grep -c .)
-    paths_ok=$(grep -c 'Gbits/sec' "$RESULTS")
+    if (( FS_SKIP_IPERF )); then   # no load: a path counts once its check passed
+        hosts_tested=$(awk 'NR==FNR {h[$1]=$2; next} {print h[$1]; print h[$2]}' "$WORK/ipmap" "$WORK/paths_ok" | sort -u | grep -c .)
+        paths_ok=$(wc -l < "$WORK/paths_ok" | tr -d ' ')
+    else
+        hosts_tested=$(grep 'Gbits/sec' "$RESULTS" | awk -F'[, ]+' 'NR==FNR {h[$1]=$2; next} {print h[$1]; print h[$2]}' "$WORK/ipmap" - | sort -u | grep -c .)
+        paths_ok=$(grep -c 'Gbits/sec' "$RESULTS")
+    fi
     skipped=$(awk '$2 ~ /^[12]$/' "$PATH_EXCL" | wc -l | tr -d ' ')
     noresult=$(grep -c ',ERROR' "$RESULTS")
     if (( paths_ok == 0 )); then coverage=NONE; cov_rc=4
@@ -1781,6 +1819,7 @@ main() {
     else coverage=PARTIAL; cov_rc=3; fi
     local RESULT_LINE="RESULT coverage=$coverage hosts=$hosts_tested/$expect paths=$paths_ok/$PATHS_PLANNED skipped=$skipped no_result=$noresult"
     RESULT_LINE+=" cross_rail=$( (( CROSS_UNROUTED )) && echo unrouted || echo "$CROSS")"
+    (( FS_SKIP_IPERF )) && RESULT_LINE+=" iperf=skipped (FS_SKIP_IPERF=1: paths = path checks passed, no bandwidth tested)"
     (( INPUT_RANGES )) && [[ -z $FS_EXPECT_HOSTS ]] && RESULT_LINE+=" (hosts expected = hosts found on the rails; set FS_EXPECT_HOSTS to check for missing ones)"
 
     local ts; ts=$(date -u +%Y%m%dT%H%M%SZ)
@@ -1812,6 +1851,7 @@ main() {
         echo "pairs_covered=$PAIRS_COVERED"
         echo "pairs_total=$PAIRS_TOTAL"
         echo "udp=$FS_UDP"
+        echo "iperf=$( (( FS_SKIP_IPERF )) && echo skipped || echo run)"
         echo "udp_duration=$FS_UDP_DURATION"
         echo "coverage=$coverage"
         echo "hosts_expected=$expect"

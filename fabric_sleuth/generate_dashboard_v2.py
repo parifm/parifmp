@@ -2192,9 +2192,13 @@ def parse_tar_archive(filepath):
     # Problems make the run fail loudly (red banner, exit 3); notes are shown, not failed on
     meta = data['metadata']
     problems, notes = [], []
-    if not data['iperf_results']:
+    no_load = meta.get('iperf') == 'skipped'   # FS_SKIP_IPERF=1: no bandwidth runs by design
+    if no_load:
+        notes.append('Bandwidth not tested (FS_SKIP_IPERF=1, for a cluster whose I/O could not stop): path checks, '
+                     "counters over the cluster's own traffic, system info and host-side receive only.")
+    if not data['iperf_results'] and not no_load:
         problems.append('No throughput results in this archive.')
-    elif all(r['gbps'] == 0 for r in data['iperf_results']):
+    elif data['iperf_results'] and all(r['gbps'] == 0 for r in data['iperf_results']):
         problems.append('Every run measured 0 Gbps: iperf3 connected but moved no data (another run on the same hosts, or a blocked path).')
     try:
         want = int(meta.get('iterations', 0))
@@ -2207,7 +2211,7 @@ def parse_tar_archive(filepath):
     cov = meta.get('coverage')
     if cov and cov != 'COMPLETE':
         problems.append(f"Collector coverage {cov}: hosts tested {meta.get('hosts_tested', '?')}/{meta.get('hosts_expected', '?')}, "
-                        f"paths with a result {meta.get('paths_ok', '?')}/{meta.get('paths_planned', '?')} (see Not tested).")
+                        f"{'path checks passed' if no_load else 'paths with a result'} {meta.get('paths_ok', '?')}/{meta.get('paths_planned', '?')} (see Not tested).")
     hosts = _int(meta.get('total_hosts')) or 0
     if hosts and data['nic_inventory']['total'] == 0:
         problems.append('No NIC diagnostics were collected.')
