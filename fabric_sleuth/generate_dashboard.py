@@ -6,6 +6,7 @@ Parses the .tgz archive (older runs: .tar.gz) produced by iperf3_be_to_be_dual_p
 and generates a self-contained interactive HTML dashboard.
 
 Usage: python3 generate_dashboard.py <run>.tgz|<run>.tar.gz [output.html]   (default: <run>.html next to the archive)
+FS_SPINES, FS_SPINE_LINKS, FS_SPINE_GBPS in the environment declare the leaf-spine uplinks for a run that did not.
 """
 
 import re
@@ -283,6 +284,7 @@ lost {lost:,} of {sent:,} datagrams ({100 * lost / sent if sent else 0:.3f}%): r
 <th>Rx socket</th><th>NIC</th><th>Backlog</th><th>Unaccounted</th></tr></thead><tbody>{rows}</tbody></table></div></div>"""
 
     # cross-rail runs below the OK cut-off: the inter-rail total and, when same-rail runs are OK, the shared-path finding
+    uplinks_html = _uplinks_html(_uplinks(data))
     cross_html = ''
     fx = min(rt.get(x, data['tiers'])['F'] for x in ('A', 'B'))
     xs = [r for r in results if _cross(r, data.get('ip_rail', {}))]
@@ -372,6 +374,7 @@ td.dt-row-num {{ color: #556; font-size: 0.8em; text-align: right; width: 30px; 
     </span>
 </div>
 {cross_html}
+{uplinks_html}
 {not_tested_html}
 {udp_html}
 
@@ -1483,6 +1486,104 @@ def _cross_finding(data):
     return agg, shared
 
 
+def _uplinks(data):
+    """Per leaf (LLDP neighbour) and phase, the runs crossing to another leaf, as the collector summary does. With
+    spines x links x Gbps declared (run metadata, else FS_SPINES/FS_SPINE_LINKS/FS_SPINE_GBPS here), judged against it."""
+    meta = data['metadata']
+    names = (('spines', 'FS_SPINES'), ('spine_links', 'FS_SPINE_LINKS'), ('spine_gbps', 'FS_SPINE_GBPS'))
+    run, env = [_int(meta.get(k)) for k, _ in names], [_int(os.environ.get(e)) for _, e in names]
+    ok3 = lambda d: all(x and x > 0 for x in d)
+    n, m, s = run if ok3(run) else env if ok3(env) else (0, 0, 0)
+    u = {'n': n, 'm': m, 's': s, 'C': n * m * s, 'rows': [], 'notes': [],
+         'src': 'declared by the run' if ok3(run) else 'declared at render time (FS_SPINES etc. in the environment)'}
+    C = u['C']
+    ipr = data.get('ip_rail', {})
+    leaf = {l['ip']: l['switch'] for l in data['lldp_info'] if l['switch'] not in ('unknown', '')}
+    ips = set(ipr)
+    if not any(ip in leaf for ip in ips):
+        if not C:
+            return None
+        u['notes'].append('Uplink check skipped: it needs LLDP, and no rail NIC reported a switch neighbour.')
+        return u
+    rr = data.get('rail_rate', {})
+    la, lb = rr.get('A') or data['line_rate'], rr.get('B') or data['line_rate']
+    def med(v):
+        v, k = sorted(v), len(v)
+        return None if not k else v[k // 2] if k % 2 else (v[k // 2 - 1] + v[k // 2]) / 2
+    ob, ib, xl, same, its = defaultdict(float), defaultdict(float), defaultdict(list), defaultdict(list), defaultdict(set)
+    left = 0
+    for r in data['iperf_results']:
+        a, b = r['src'], r['dst']
+        if a not in ipr or b not in ipr:
+            continue
+        if a not in leaf or b not in leaf:
+            left += 1
+            continue
+        x, y, ph, it = leaf[a], leaf[b], str(r['phase']), r['iteration']
+        if x == y:
+            if ipr[a] == ipr[b]:
+                same[x].append(r['gbps'])
+            continue
+        ob[ph, it, x] += r['gbps']; ib[ph, it, y] += r['gbps']
+        xl[ph, x].append(r['gbps']); xl[ph, y].append(r['gbps']); its[ph].add(it)
+    if not ob and not ib and not C:
+        return None
+    nm = sum(1 for ip in ips if ip not in leaf)
+    if nm:
+        u['notes'].append(f'{nm} of {len(ips)} rail NICs have no LLDP neighbour; their {left} runs are left out of the leaf totals.')
+    dl = defaultdict(float)
+    for ip in ips:
+        if ip in leaf:
+            dl[leaf[ip]] += data.get('ip_gbps', {}).get(ip) or (la if ipr[ip] == 'A' else lb)
+    lx = min(la, lb)
+    okp, slp = int(meta.get('ok_pct', 75)), int(meta.get('slow_pct', 50))
+    okc = lx * okp / 100
+    best = {}
+    for (ph, it, lf) in set(ob) | set(ib):
+        busy = max(ob[ph, it, lf], ib[ph, it, lf])
+        if (ph, lf) not in best or busy > best[ph, lf][0]:
+            best[ph, lf] = (busy, it)
+    for (ph, lf) in sorted(best):
+        busy, it = best[ph, lf]
+        row = {'leaf': lf, 'phase': ph, 'out': ob[ph, it, lf], 'in': ib[ph, it, lf], 'iter': it, 'iters': len(its[ph]),
+               'down': dl[lf], 'pct': None, 'ovs': None, 'verdict': ''}
+        if C:
+            row['pct'], row['ovs'] = 100 * busy / C, dl[lf] / C
+            xm, sm = med(xl[ph, lf]), med(same[lf])
+            if row['pct'] >= okp and xm < lx:
+                row['verdict'] = (f"at declared uplink capacity: oversubscribed {row['ovs']:.1f}:1 by design; cross-leaf runs "
+                                  f'(median {xm:.1f} Gbps) get their share of the uplinks, not line rate')
+            elif xm is not None and xm < okc and sm is not None and sm >= okc and row['pct'] < slp:
+                row['verdict'] = (f"uplinks carried only {row['pct']:.0f}% of declared capacity while cross-leaf runs were slow "
+                                  f'(median {xm:.1f} Gbps, OK >= {okc:g}) and same-leaf runs were OK (median {sm:.1f}); a link or '
+                                  'spine may be down, or ECMP is uneven')
+        u['rows'].append(row)
+    if not u['rows']:
+        u['notes'].append('No runs crossed between leaves.')
+    return u
+
+
+def _uplinks_html(u):
+    if not u:
+        return ''
+    t = lambda g: f'{g / 1000:.2f} T'
+    rows = ''
+    for r in u['rows']:
+        busiest = f" (iteration {r['iter']}, busiest of {r['iters']})" if r['iters'] > 1 else ''
+        judged = (f"<td>{t(u['C'])}</td><td>{r['pct']:.0f}%</td>" if u['C'] else '')
+        tail = (f"<td>{r['ovs']:.1f}:1</td><td>{escape(r['verdict'])}</td>" if u['C'] else '')
+        rows += (f"<tr><td>{escape(r['leaf'])}</td><td>{escape(r['phase'])}{busiest}</td><td>{t(r['out'])}</td><td>{t(r['in'])}</td>"
+                 f"{judged}<td>{t(r['down'])}</td>{tail}</tr>")
+    head = (f"Leaf uplinks, {u['src']}: {u['n']} spines x {u['m']} links x {u['s']}G = {t(u['C'])} per leaf, each direction" if u['C'] else
+            'Leaf uplink totals (set FS_SPINES, FS_SPINE_LINKS, FS_SPINE_GBPS to judge against uplink capacity)')
+    cols = ('<th>Leaf</th><th>Phase</th><th>Out</th><th>In</th>' + ('<th>Declared</th><th>Busiest</th>' if u['C'] else '')
+            + '<th>Downlinks</th>' + ('<th>Oversubscribed</th><th>Verdict</th>' if u['C'] else ''))
+    return (f'<div class="card mb-3"><div class="card-header">{head}</div><div class="card-body">'
+            + ''.join(f'<p class="text-warning mb-1">{escape(x)}</p>' for x in u['notes'])
+            + (f'<table class="table table-sm table-striped"><thead><tr>{cols}</tr></thead><tbody>{rows}</tbody></table>'
+               if u['rows'] else '') + '</div></div>')
+
+
 def _ip_speeds(results, ip_rail):
     """Per-IP Gbps from same-rail runs; an IP with none falls back to its cross-rail runs (the returned set)."""
     same, cross = defaultdict(list), defaultdict(list)
@@ -1813,6 +1914,7 @@ def parse_tar_archive(filepath):
         parts = line.split()
         if len(parts) >= 16:
             nic_by_ip[parts[2]] = parts
+    data['ip_gbps'] = {ip: int(p[3][:-4]) / 1000 for ip, p in nic_by_ip.items() if re.match(r'^\d+Mb/s$', p[3])}
 
     for ip, speeds in ip_stats.items():
         avg = sum(speeds) / len(speeds)

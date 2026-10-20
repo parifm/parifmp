@@ -63,6 +63,11 @@ Optional (default)
                    Each iteration: phase 1 same rail (A->A, B->B); phase 2 cross-rail, one flow each
                    way per pair (A->B and B->A at once). Host Status = the worst of Rail_A, Rail_B
                    and Cross; SLOW(cross)/CRITICAL(cross) = only the cross-rail runs were that slow.
+  FS_SPINES        leaf-spine uplinks, all three or none (no defaults): spines, links from each
+  FS_SPINE_LINKS   leaf to each spine, Gbps per link. The summary always sums each leaf's runs to
+  FS_SPINE_GBPS    other leaves per phase (leaf = LLDP neighbour); with these set it judges them
+                   against spines x links x Gbps per direction: oversubscribed by design, or a
+                   lost link/spine. Status is unchanged.
   FS_BUSY_CHECK    command run on each host before any load; exit 0 = host is in
                    production use, 1 = idle, anything else = unknown (counts as in use).
                    Default: WEKA containers running (`weka local ps`); idle where WEKA
@@ -756,6 +761,57 @@ cross_summary() {
                   printf "  Same-rail runs are OK, cross-rail runs are not: cross-rail median %s Gbps per flow (OK >= %g), same-rail median %s (A) / %s (B) Gbps. The hosts pass on their own rail, so the likely limit is the shared path between the rails (switch inter-link or spine), not the hosts.\n", xm, cx, (am == "" ? "-" : am), (bm == "" ? "-" : bm) }' <<<"$x"
 }
 
+# uplink_summary ipmap lldp nicdiag results: per leaf (its LLDP neighbour) and phase, the runs that cross
+# to another leaf, out by the source's leaf and in by the destination's. With FS_SPINES/FS_SPINE_LINKS/
+# FS_SPINE_GBPS, judged against C = spines x links x Gbps per direction. NICs without LLDP stay out.
+UPLINK_AWK='
+function med(s,   n, v, i, j, t) { n = split(s, v, " "); if (!n) return -1
+    for (i = 2; i <= n; i++) { t = v[i] + 0; for (j = i - 1; j >= 1 && v[j] + 0 > t; j--) v[j + 1] = v[j]; v[j + 1] = t }
+    return n % 2 ? v[(n + 1) / 2] + 0 : (v[n / 2] + v[n / 2 + 1]) / 2 }
+function tb(g) { return sprintf("%.2f T", g / 1000) }
+FNR == 1 { f++ }
+f == 1 { rail[$1] = $3; nip++; next }
+f == 2 { if ($4 != "unknown" && $4 != "") leaf[$3] = $4; next }
+f == 3 { if ($4 ~ /^[0-9]+Mb\/s$/) { s = $4; sub(/Mb\/s/, "", s); sp[$3] = s / 1000 }; next }
+/^### / { split($2, a, ":"); split($3, b, ":"); it = a[2]; ph = b[2]; next }
+{ g = -1; for (i = 1; i <= NF; i++) if ($i == "Gbits/sec") { g = $(i-1) + 0; break }
+  if (g < 0 || !($1 in rail) || !($2 in rail)) next
+  if (!($1 in leaf) || !($2 in leaf)) { left++; next }
+  x = leaf[$1]; y = leaf[$2]
+  if (x == y) { if (rail[$1] == rail[$2]) same[x] = same[x] " " g; next }
+  if (!((ph, it, x) in seen)) { seen[ph, it, x] = 1; key[++nk] = ph SUBSEP it SUBSEP x }
+  if (!((ph, it, y) in seen)) { seen[ph, it, y] = 1; key[++nk] = ph SUBSEP it SUBSEP y }
+  ob[ph, it, x] += g; ib[ph, it, y] += g; xl[ph, x] = xl[ph, x] " " g; xl[ph, y] = xl[ph, y] " " g; its[ph, it] = 1 }
+END {
+    for (ip in rail) if (ip in leaf) { nl++; dl[leaf[ip]] += (ip in sp) ? sp[ip] : (rail[ip] == "A" ? la : lb) } else nm++
+    if (C > 0) printf "  Declared uplinks: %d spines x %d links x %dG = %s per leaf, each direction\n", N, M, S, tb(C)
+    if (!nl) { if (C > 0) print "  Uplink check skipped: it needs LLDP, and no rail NIC reported a switch neighbour."; exit }
+    # busiest iteration per (phase, leaf), in first-seen order
+    for (k = 1; k <= nk; k++) { split(key[k], p, SUBSEP); bz = ob[key[k]] > ib[key[k]] ? ob[key[k]] : ib[key[k]]
+        pl = p[1] SUBSEP p[3]; if (!(pl in best)) lst[++no] = pl; if (!(pl in best) || bz > best[pl]) { best[pl] = bz; bk[pl] = key[k] } }
+    if (!no && C == 0) exit
+    if (C == 0) print "  Uplink totals per leaf (set FS_SPINES, FS_SPINE_LINKS, FS_SPINE_GBPS to judge against uplink capacity):"
+    if (nm) printf "  Uplinks: %d of %d rail NICs have no LLDP neighbour; their %d runs are left out of the leaf totals.\n", nm, nip, left
+    if (!no) { print "  No runs crossed between leaves."; exit }
+    lx = la < lb ? la : lb; okc = lx * ok / 100
+    for (q = 1; q <= no; q++) { pl = lst[q]; split(pl, p, SUBSEP); k = bk[pl]; split(k, kk, SUBSEP)
+        ni = 0; for (z in its) { split(z, zz, SUBSEP); if (zz[1] == p[1]) ni++ }
+        bi = ni > 1 ? sprintf(" [iteration %s, busiest of %d]", kk[2], ni) : ""
+        if (C == 0) { printf "  Uplinks %s phase %s: out %s / in %s%s; downlinks %s\n", p[2], p[1], tb(ob[k]), tb(ib[k]), bi, tb(dl[p[2]]); continue }
+        pct = 100 * best[pl] / C
+        printf "  Uplinks %s phase %s: out %s / in %s of %s declared (%.0f%%)%s; downlinks %s, oversubscribed %.1f:1\n", p[2], p[1], tb(ob[k]), tb(ib[k]), tb(C), pct, bi, tb(dl[p[2]]), dl[p[2]] / C
+        xm = med(xl[pl]); sm = med(same[p[2]])
+        if (lx > 0 && pct >= ok && xm < lx)
+            printf "    at declared uplink capacity: oversubscribed %.1f:1 by design; cross-leaf runs (median %.1f Gbps) get their share of the uplinks, not line rate\n", dl[p[2]] / C, xm
+        else if (lx > 0 && xm >= 0 && xm < okc && sm >= okc && pct < slow)
+            printf "    uplinks carried only %.0f%% of declared capacity while cross-leaf runs were slow (median %.1f Gbps, OK >= %g) and same-leaf runs were OK (median %.1f); a link or spine may be down, or ECMP is uneven\n", pct, xm, okc, sm
+    } }'
+
+uplink_summary() {
+    awk -F'[, ]+' -v C="${UPLINK_GBPS:-0}" -v N="$FS_SPINES" -v M="$FS_SPINE_LINKS" -v S="$FS_SPINE_GBPS" -v la="${LINE_A:-0}" -v lb="${LINE_B:-0}" \
+        -v ok="$FS_OK_PCT" -v slow="$FS_SLOW_PCT" "$UPLINK_AWK" "$@"
+}
+
 # UDP phases U1 (same rail) and U2 (cross) on the current pairs, with host and NIC
 # counters read around each phase so lost datagrams can be placed.
 udp_phases() {
@@ -881,6 +937,14 @@ main() {
     done
     (( FS_STREAMS >= 2 )) || die "FS_STREAMS must be >= 2 (iperf3 prints no [SUM] line for one stream)"
     [[ -z $FS_LINE_GBPS || $FS_LINE_GBPS =~ ^[1-9][0-9]*(,[1-9][0-9]*)?$ ]] || die "FS_LINE_GBPS must be an integer (both rails) or A,B integers, got '$FS_LINE_GBPS'"
+    # declared uplinks: all three or none, and no default speed (a guess could pass a fault)
+    local sv smiss=; UPLINK_GBPS=0
+    for sv in FS_SPINES FS_SPINE_LINKS FS_SPINE_GBPS; do
+        if [[ -z ${!sv} ]]; then smiss+=" $sv"
+        elif ! [[ ${!sv} =~ ^[1-9][0-9]*$ ]]; then die "$sv must be a positive integer, got '${!sv}'"; fi
+    done
+    if [[ -z $smiss ]]; then UPLINK_GBPS=$(( FS_SPINES * FS_SPINE_LINKS * FS_SPINE_GBPS ))
+    elif [[ $smiss != " FS_SPINES FS_SPINE_LINKS FS_SPINE_GBPS" ]]; then die "FS_SPINES, FS_SPINE_LINKS and FS_SPINE_GBPS go together; missing:$smiss"; fi
     [[ -z $FS_EXPECT_HOSTS || $FS_EXPECT_HOSTS =~ ^[1-9][0-9]*$ ]] || die "FS_EXPECT_HOSTS must be a positive integer"
     [[ -z $FS_TOS || ( $FS_TOS =~ ^[0-9]{1,3}$ && 10#$FS_TOS -le 255 ) ]] || die "FS_TOS must be 0-255 (decimal), got '$FS_TOS'"
     [[ -n $FS_TOS ]] && FS_TOS=$(( 10#$FS_TOS ))
@@ -1329,6 +1393,7 @@ main() {
                     }
                 }' "$map" - | { read -r hdr; echo "$hdr"; sort -k2 -n; } | column -t | sed 's/^/  /'
             cross_summary "$map" "$RESULTS"
+            uplink_summary "$map" "$LLDP_DATA" "$NIC_DIAG" "$RESULTS"
         else
             echo "  No iperf3 results collected."
         fi
@@ -1391,6 +1456,9 @@ main() {
         echo "line_rate_b_gbps=${LINE_B:-unknown}"
         echo "ok_pct=$FS_OK_PCT"
         echo "slow_pct=$FS_SLOW_PCT"
+        echo "spines=${FS_SPINES:-none}"
+        echo "spine_links=${FS_SPINE_LINKS:-none}"
+        echo "spine_gbps=${FS_SPINE_GBPS:-none}"
         echo "busy_hosts=${#BUSY[@]}"
         echo "port=$FS_PORT"
         echo "tos=${FS_TOS:-none}"
