@@ -954,11 +954,43 @@ cleanup() {
     exit $rc
 }
 
+# Every FS_* setting this tool reads. Any other FS_* in the environment is a typo that would be silently
+# ignored (a dropped letter, say), so it stops the run. A regress test keeps the list complete.
+FS_KNOWN="FS_BUSY_CHECK FS_BUSY_OK FS_CROSS_MAX FS_CROSS_RAIL FS_DURATION FS_EXPECT_HOSTS FS_HOSTS FS_IGNORE_LOCK FS_ITER FS_LABEL FS_LINE_GBPS FS_LOCK_FILE FS_MAX_TARGETS FS_MESH FS_NICS FS_OK_PCT FS_OUT_DIR FS_PORT FS_RAIL_A FS_RAIL_B FS_RAILS FS_RUNLOG FS_SLOW_PCT FS_SPINE_GBPS FS_SPINE_LINKS FS_SPINES FS_SSH_PARALLEL FS_SSH_RETRY_PARALLEL FS_SSH_USER FS_STREAMS FS_SYSFS FS_TOS FS_UDP FS_UDP_DURATION"
+
+# edit_distance a b: Levenshtein distance, for the "did you mean" hint
+edit_distance() {
+    local a=$1 b=$2 i j c x y z; local -a p q
+    for (( j = 0; j <= ${#b}; j++ )); do p[j]=$j; done
+    for (( i = 1; i <= ${#a}; i++ )); do
+        q=($i)
+        for (( j = 1; j <= ${#b}; j++ )); do
+            [[ ${a:i-1:1} == "${b:j-1:1}" ]] && c=0 || c=1
+            x=$(( p[j] + 1 )); y=$(( q[j-1] + 1 )); z=$(( p[j-1] + c ))
+            q[j]=$(( x < y ? (x < z ? x : z) : (y < z ? y : z) ))
+        done
+        p=("${q[@]}")
+    done
+    echo "${p[${#b}]}"
+}
+
+check_settings() {
+    local v k d best bd
+    for v in $(compgen -e); do
+        [[ $v == FS_* && " $FS_KNOWN " != *" $v "* ]] || continue
+        best=; bd=99
+        for k in $FS_KNOWN; do d=$(edit_distance "$v" "$k"); (( d < bd )) && { bd=$d; best=$k; }; done
+        (( bd == 1 || bd <= (${#v} - 3) / 3 )) && die "unknown setting $v; did you mean $best?"
+        die "unknown setting $v; this tool reads: ${FS_KNOWN// /, }"
+    done
+}
+
 # ======================================================================
 
 main() {
     (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 3) )) || die "needs bash 4.3+"
     [[ $1 == -h || $1 == --help ]] && { usage; exit 0; }
+    check_settings
 
     : "${FS_ITER:=5}" "${FS_STREAMS:=16}" "${FS_PORT:=5201}" "${FS_SSH_USER:=root}"
     : "${FS_SSH_PARALLEL:=64}" "${FS_SSH_RETRY_PARALLEL:=8}" "${FS_MAX_TARGETS:=4096}" "${FS_OUT_DIR:=.}"
