@@ -1,6 +1,6 @@
 #!/bin/bash
 # fabric_sleuth: dual-rail backend-to-backend iperf3 fabric check.
-# Hosts and rails come from env vars (see usage); output is a tarball
+# Hosts and rails come from env vars (see usage); output is a .tgz bundle
 # that generate_dashboard.py turns into an HTML dashboard.
 
 usage() {
@@ -41,7 +41,7 @@ Optional (default)
   FS_SSH_PARALLEL  ssh sessions at once for sweep and collection (64)
   FS_MAX_TARGETS   refuse to expand FS_HOSTS beyond this (4096)
   FS_LABEL         name in the report and tarball (first tested hostname)
-  FS_OUT_DIR       where the tarball goes (.)
+  FS_OUT_DIR       where the .tgz bundle goes (.)
   FS_LINE_GBPS     link speed for OK/SLOW cut-offs: N for both rails, or A,B when the rails
                    differ by design (e.g. 100,50). Default: the faster rail's most common NIC
                    speed for both, so a rail that came up slow everywhere shows as slow
@@ -1084,7 +1084,7 @@ main() {
     done | sort -V > "$COLLECT_DIR/host_list.txt"
     printf '%s\n' "${!DOWN_IP[@]}" | grep . | sort -V > "$COLLECT_DIR/down_ips.txt"
 
-    local tarball=$FS_OUT_DIR/fabric_sleuth_${LABEL}_${ts}.tar.gz
+    local tarball=$FS_OUT_DIR/fabric_sleuth_${LABEL}_${ts}.tgz
     stop_servers
     DONE=1
     [[ -n $FS_RUNLOG && -f $FS_RUNLOG ]] && cp "$FS_RUNLOG" "$COLLECT_DIR/run.log"

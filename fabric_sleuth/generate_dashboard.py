@@ -2,10 +2,10 @@
 """
 Data plane validation dashboard generator (fabric_sleuth)
 
-Parses the tar.gz archive produced by iperf3_be_to_be_dual_path.sh
+Parses the .tgz archive (older runs: .tar.gz) produced by iperf3_be_to_be_dual_path.sh
 and generates a self-contained interactive HTML dashboard.
 
-Usage: python3 generate_dashboard.py <run>.tar.gz [output.html]   (default: <run>.html next to the tarball)
+Usage: python3 generate_dashboard.py <run>.tgz|<run>.tar.gz [output.html]   (default: <run>.html next to the archive)
 """
 
 import re
@@ -21,6 +21,8 @@ from html import escape
 INPUT_FILE = sys.argv[1] if len(sys.argv) > 1 else 'dp_validation.tar.gz'
 # default: <run>.html next to the tarball
 OUTPUT_FILE = sys.argv[2] if len(sys.argv) > 2 else re.sub(r"\.tar\.gz$|\.tgz$", "", INPUT_FILE) + ".html"
+if os.path.abspath(OUTPUT_FILE) == os.path.abspath(INPUT_FILE):   # never write the page over the archive
+    sys.exit(f"Error: output {OUTPUT_FILE} is the input archive")
 
 
 def generate_html(data, output_path):
@@ -1494,7 +1496,7 @@ def _ip_speeds(results, ip_rail):
 
 
 def parse_tar_archive(filepath):
-    """Parse structured data from the tar.gz archive produced by the iperf3 script."""
+    """Parse structured data from the .tgz/.tar.gz archive produced by the iperf3 script."""
     data = {
         'metadata': {},
         'down_ips': [],
