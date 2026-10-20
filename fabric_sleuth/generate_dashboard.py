@@ -35,6 +35,8 @@ def generate_html(data, output_path):
         return rt.get(data.get('ip_rail', {}).get(ip), data['tiers'])[k]
     def tpath(r, k):
         return min(tip(r['src'], k), tip(r['dst'], k))
+    badge_tiers = {r: {k: rt.get(r, data['tiers'])[k] for k in ('G', 'F', 'S')} for r in ('A', 'B')}
+    badge_tiers['X'] = {k: min(badge_tiers['A'][k], badge_tiers['B'][k]) for k in ('G', 'F', 'S')}
     rr = data.get('rail_rate', {})
     rail_note = (f" | rails differ: A {rr['A']}G, B {rr['B']}G (tables judge each IP by its rail; charts use {L}G)"
                  if rr and rr.get('A') != rr.get('B') else '')
@@ -70,11 +72,8 @@ def generate_html(data, output_path):
     def h(ip):
         return ip_to_host.get(ip, '')
 
-    # Per-IP stats (each IP's throughput regardless of src/dst role)
-    ip_stats = defaultdict(list)
-    for r in results:
-        ip_stats[r['src']].append(r['gbps'])
-        ip_stats[r['dst']].append(r['gbps'])
+    # Per-IP stats (each IP's throughput regardless of src/dst role; same-rail runs unless it has none)
+    ip_stats, _ = _ip_speeds(results, data.get('ip_rail', {}))
     ip_avgs = {ip: sum(v)/len(v) for ip, v in ip_stats.items()}
     slow_ip_count = sum(1 for ip, v in ip_avgs.items() if v < tip(ip, 'F'))
 
@@ -649,7 +648,7 @@ td.dt-row-num {{ color: #556; font-size: 0.8em; text-align: right; width: 30px; 
         </div>
         <div class="card-body">
             <table class="table table-sm table-striped table-hover" id="allResultsTable">
-            <thead><tr><th>#</th><th>Host</th><th>Gbps<small>avg of NIC A &amp; B medians</small></th><th>Retrans<small>total TCP retransmits</small></th><th>IP A</th><th>Dev A</th><th>A Median<small>median Gbps across NIC A tests</small></th><th>A Retrans<small>total retransmits, NIC A</small></th><th>IP B</th><th>Dev B</th><th>B Median<small>median Gbps across NIC B tests</small></th><th>B Retrans<small>total retransmits, NIC B</small></th></tr></thead>
+            <thead><tr><th>#</th><th>Host</th><th>Gbps<small>avg of NIC A &amp; B medians</small></th><th>Retrans<small>total TCP retransmits</small></th><th>IP A</th><th>Dev A</th><th>A Median<small>median Gbps across NIC A tests</small></th><th>A Retrans<small>total retransmits, NIC A</small></th><th>IP B</th><th>Dev B</th><th>B Median<small>median Gbps across NIC B tests</small></th><th>B Retrans<small>total retransmits, NIC B</small></th><th>Cross Median<small>median Gbps across A&lt;-&gt;B tests (a path, not a NIC)</small></th></tr></thead>
             <tbody></tbody></table>
         </div>
     </div>
@@ -761,7 +760,7 @@ $(document).ready(function() {{
         slowData.forEach(function(r) {{
             var d = r.diag || {{}};
             var badge = r.avg >= {F} ? 'badge-ok' : r.avg >= {S} ? 'badge-slow' : 'badge-down';
-            slowHtml += '<tr><td></td><td>' + (d.host || '-') + '</td><td>' + r.ip + '</td><td><span class="badge ' + badge + '">' + r.avg.toFixed(1) + '</span></td><td>' + r.samples + '</td>';
+            slowHtml += '<tr><td></td><td>' + (d.host || '-') + '</td><td>' + r.ip + '</td><td><span class="badge ' + badge + '">' + r.avg.toFixed(1) + '</span></td><td>' + r.samples + (r.cross_only ? ' <small>(cross-rail runs only)</small>' : '') + '</td>';
             slowHtml += '<td>' + (d.nic || '-') + '</td><td>' + (d.speed || '-') + '</td>';
             slowHtml += '<td>' + (d.fec ? d.fec.toLocaleString() : '-') + '</td>';
             slowHtml += '<td class="diag-warn">' + (d.diagnosis || '-') + '</td></tr>';
@@ -797,8 +796,13 @@ $(document).ready(function() {{
     }}
 
     // Pre-compute per-host summary: one row per host with median per NIC
-    // Need to map IPs to NIC A vs B — A IPs have odd 3rd octet, B have even
-    function isNicA(ip) {{ var parts = ip.split('.'); return parseInt(parts[2]) % 2 === 1; }}
+    // Rail per IP from rails.txt; archives without it (older collector) fall back to odd third octet = rail A
+    var ipRail = {json.dumps(data.get('ip_rail', {}))};
+    function isNicA(ip) {{ if (ipRail[ip]) return ipRail[ip] === 'A'; var parts = ip.split('.'); return parseInt(parts[2]) % 2 === 1; }}
+    // a cross-rail run measures a path, not either NIC: kept out of the A/B medians, shown as its own column
+    function isCross(r) {{ return isNicA(r.src) !== isNicA(r.dst); }}
+    var railTiers = {json.dumps(badge_tiers)};
+    function railBadge(v, rl) {{ var t = railTiers[rl]; return v >= t.G ? 'badge-ok' : v >= t.F ? 'badge-func' : v >= t.S ? 'badge-slow' : 'badge-down'; }}
     var downIps = new Set({json.dumps(data['down_ips'])});
 
     // Build per-host data: map all known IPs (from LLDP/driver) to hosts, include down NICs as 0
@@ -806,7 +810,7 @@ $(document).ready(function() {{
     // First, seed every host's NIC IPs from the ip->host map
     Object.keys(ipHost).forEach(function(ip) {{
         var h = ipHost[ip];
-        if (!perHost[h]) perHost[h] = {{ host: h, ipA: '', ipB: '', aGbps: [], bGbps: [], aRetr: 0, bRetr: 0, aGB: 0, bGB: 0 }};
+        if (!perHost[h]) perHost[h] = {{ host: h, ipA: '', ipB: '', aGbps: [], bGbps: [], xGbps: [], aRetr: 0, bRetr: 0, xRetr: 0, aGB: 0, bGB: 0, xGB: 0 }};
         if (isNicA(ip)) perHost[h].ipA = ip;
         else perHost[h].ipB = ip;
     }});
@@ -814,10 +818,12 @@ $(document).ready(function() {{
     allData.forEach(function(r) {{
         var retr = r.retransmits || 0;
         var gb = r.gbytes || 0;
+        var x = isCross(r);
         [r.src, r.dst].forEach(function(ip) {{
             var h = ipHost[ip] || ip;
-            if (!perHost[h]) perHost[h] = {{ host: h, ipA: '', ipB: '', aGbps: [], bGbps: [], aRetr: 0, bRetr: 0, aGB: 0, bGB: 0 }};
-            if (isNicA(ip)) {{ perHost[h].aGbps.push(r.gbps); perHost[h].aRetr += retr; perHost[h].aGB += gb; }}
+            if (!perHost[h]) perHost[h] = {{ host: h, ipA: '', ipB: '', aGbps: [], bGbps: [], xGbps: [], aRetr: 0, bRetr: 0, xRetr: 0, aGB: 0, bGB: 0, xGB: 0 }};
+            if (x) {{ perHost[h].xGbps.push(r.gbps); perHost[h].xRetr += retr; perHost[h].xGB += gb; }}
+            else if (isNicA(ip)) {{ perHost[h].aGbps.push(r.gbps); perHost[h].aRetr += retr; perHost[h].aGB += gb; }}
             else {{ perHost[h].bGbps.push(r.gbps); perHost[h].bRetr += retr; perHost[h].bGB += gb; }}
         }});
     }});
@@ -831,14 +837,15 @@ $(document).ready(function() {{
         var bName = ipNic[h.ipB] || 'NIC B';
         var nicDown = aDown && bDown ? aName + ' & ' + bName : aDown ? aName : bDown ? bName : '';
         var gbps = (aDown || bDown) ? null : Math.round((aMed + bMed) / 2);
-        var totalRetr = h.aRetr + h.bRetr;
-        var totalGB = h.aGB + h.bGB;
-        hostRows.push({{ host: h.host, gbps: gbps, nicDown: nicDown, ipA: h.ipA || '-', nicA: aName, aMed: aMed, ipB: h.ipB || '-', nicB: bName, bMed: bMed, aDown: aDown, bDown: bDown, aRetr: h.aRetr, bRetr: h.bRetr, totalRetr: totalRetr, aGB: h.aGB, bGB: h.bGB, totalGB: totalGB }});
+        var totalRetr = h.aRetr + h.bRetr + h.xRetr;
+        var totalGB = h.aGB + h.bGB + h.xGB;
+        var xMed = h.xGbps.length ? median(h.xGbps) : null;
+        hostRows.push({{ host: h.host, gbps: gbps, nicDown: nicDown, ipA: h.ipA || '-', nicA: aName, aMed: aMed, ipB: h.ipB || '-', nicB: bName, bMed: bMed, xMed: xMed, aDown: aDown, bDown: bDown, aRetr: h.aRetr, bRetr: h.bRetr, totalRetr: totalRetr, aGB: h.aGB, bGB: h.bGB, totalGB: totalGB }});
     }});
 
-    function nicBadge(val, isDown) {{
+    function nicBadge(val, isDown, rl) {{
         if (isDown) return '<span class="badge badge-down">DOWN</span>';
-        return '<span class="badge ' + gbpsBadge(val) + '">' + val + '</span>';
+        return '<span class="badge ' + railBadge(val, rl) + '">' + val + '</span>';
     }}
     // Format retransmits with % of estimated total segments (GBytes * 1e9 / 1448 MSS)
     function retrFmt(retr, gb) {{
@@ -961,11 +968,12 @@ $(document).ready(function() {{
                     tbody += '<td><span class="badge ' + gbpsBadge(r.gbps) + '">' + r.gbps + '</span></td>';
                 }}
                 tbody += '<td>' + retrFmt(r.totalRetr, r.totalGB) + '</td>';
-                tbody += '<td>' + r.ipA + '</td><td>' + r.nicA + '</td><td>' + nicBadge(r.aMed, r.aDown) + '</td><td>' + retrFmt(r.aRetr, r.aGB) + '</td>';
-                tbody += '<td>' + r.ipB + '</td><td>' + r.nicB + '</td><td>' + nicBadge(r.bMed, r.bDown) + '</td><td>' + retrFmt(r.bRetr, r.bGB) + '</td></tr>';
+                tbody += '<td>' + r.ipA + '</td><td>' + r.nicA + '</td><td>' + nicBadge(r.aMed, r.aDown, 'A') + '</td><td>' + retrFmt(r.aRetr, r.aGB) + '</td>';
+                tbody += '<td>' + r.ipB + '</td><td>' + r.nicB + '</td><td>' + nicBadge(r.bMed, r.bDown, 'B') + '</td><td>' + retrFmt(r.bRetr, r.bGB) + '</td>';
+                tbody += '<td>' + (r.xMed === null ? '-' : nicBadge(r.xMed, false, 'X')) + '</td></tr>';
                 shown++;
             }});
-            $('#allResultsTable thead tr').html('<th>#</th><th>Host</th><th>Gbps<small>avg of NIC A &amp; B medians</small></th><th>Retrans<small>total TCP retransmits</small></th><th>IP A</th><th>Dev A</th><th>A Median<small>median Gbps across NIC A tests</small></th><th>A Retrans<small>total retransmits, NIC A</small></th><th>IP B</th><th>Dev B</th><th>B Median<small>median Gbps across NIC B tests</small></th><th>B Retrans<small>total retransmits, NIC B</small></th>');
+            $('#allResultsTable thead tr').html('<th>#</th><th>Host</th><th>Gbps<small>avg of NIC A &amp; B medians</small></th><th>Retrans<small>total TCP retransmits</small></th><th>IP A</th><th>Dev A</th><th>A Median<small>median Gbps across NIC A tests</small></th><th>A Retrans<small>total retransmits, NIC A</small></th><th>IP B</th><th>Dev B</th><th>B Median<small>median Gbps across NIC B tests</small></th><th>B Retrans<small>total retransmits, NIC B</small></th><th>Cross Median<small>median Gbps across A&lt;-&gt;B tests (a path, not a NIC)</small></th>');
             $('#allResultsTable tbody').html(tbody);
             rawDT = $('#allResultsTable').DataTable(dtOpts({{ pageLength: 50, order: [[2, 'asc']] }}));
         }}
@@ -1408,6 +1416,24 @@ def _int(s):
         return None
 
 
+def _cross(r, ip_rail):
+    """A run between rails measures a path, not either IP's NIC (routes decide which NIC carries it)."""
+    a, b = ip_rail.get(r['src']), ip_rail.get(r['dst'])
+    return bool(a and b and a != b)
+
+
+def _ip_speeds(results, ip_rail):
+    """Per-IP Gbps from same-rail runs; an IP with none falls back to its cross-rail runs (the returned set)."""
+    same, cross = defaultdict(list), defaultdict(list)
+    for r in results:
+        d = cross if _cross(r, ip_rail) else same
+        d[r['src']].append(r['gbps'])
+        d[r['dst']].append(r['gbps'])
+    xonly = set(cross) - set(same)
+    same.update({ip: cross[ip] for ip in xonly})
+    return same, xonly
+
+
 def parse_tar_archive(filepath):
     """Parse structured data from the tar.gz archive produced by the iperf3 script."""
     data = {
@@ -1712,10 +1738,7 @@ def parse_tar_archive(filepath):
     F = data['tiers']['F']
 
     # Build slow_ips from iperf results
-    ip_stats = defaultdict(list)
-    for r in data['iperf_results']:
-        ip_stats[r['src']].append(r['gbps'])
-        ip_stats[r['dst']].append(r['gbps'])
+    ip_stats, xonly = _ip_speeds(data['iperf_results'], data['ip_rail'])
 
     ip_host = {}
     for l in data['lldp_info']:
@@ -1733,7 +1756,7 @@ def parse_tar_archive(filepath):
     for ip, speeds in ip_stats.items():
         avg = sum(speeds) / len(speeds)
         if avg < data['rail_tiers'].get(data['ip_rail'].get(ip), data['tiers'])['F']:
-            entry = {'ip': ip, 'avg': round(avg, 1), 'samples': len(speeds), 'diag': {}}
+            entry = {'ip': ip, 'avg': round(avg, 1), 'samples': len(speeds), 'cross_only': ip in xonly, 'diag': {}}
             entry['diag']['host'] = ip_host.get(ip, '')
             if ip in nic_by_ip:
                 p = nic_by_ip[ip]

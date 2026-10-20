@@ -1263,21 +1263,26 @@ main() {
         echo "=================================================================="
         local map=$WORK/ipmap
         if grep -q 'Gbits/sec' "$RESULTS"; then
-            echo "Per-host throughput, worst first (Gbps; each rail averaged over all its runs):"
-            # status from each rail's average as a share of that rail's line rate, averaged over the host's rails
+            echo "Per-host throughput, worst first (Gbps; Rail_A/Rail_B: same-rail runs; Cross: A<->B runs, judged at the slower rail's rate):"
+            # A cross-rail run measures a path, not either rail (routes decide which NIC carries it), so it gets its own
+            # column. Status: each column's average as a share of its line rate (capped at 1), averaged over the columns.
             grep 'Gbits/sec' "$RESULTS" | awk -F'[, ]+' -v la="${LINE_A:-0}" -v lb="${LINE_B:-0}" -v ok="$FS_OK_PCT" -v slow="$FS_SLOW_PCT" '
                 NR==FNR { host[$1]=$2; rail[$1]=$3; next }
                 { for (i = 1; i <= NF; i++) if ($i == "Gbits/sec") { s = $(i-1) + 0; break }
-                  for (j = 1; j <= 2; j++) { ip = $j; sum[host[ip], rail[ip]] += s; cnt[host[ip], rail[ip]]++; seen[host[ip]] = 1 } }
+                  for (j = 1; j <= 2; j++) { ip = $j; r = rail[$1] == rail[$2] ? rail[ip] : "X"
+                                             sum[host[ip], r] += s; cnt[host[ip], r]++; seen[host[ip]] = 1 } }
                 END {
-                    print "Host Avg_Gbps Rail_A Rail_B Status"
+                    L["A"] = la; L["B"] = lb; L["X"] = la < lb ? la : lb
+                    print "Host Avg_Gbps Rail_A Rail_B Cross Status"
                     for (h in seen) {
-                        a = cnt[h,"A"] ? sum[h,"A"]/cnt[h,"A"] : -1; b = cnt[h,"B"] ? sum[h,"B"]/cnt[h,"B"] : -1
-                        t = 0; m = 0; f = 0; if (a >= 0) {t += a; m++; f += la ? a / la : 0} if (b >= 0) {t += b; m++; f += lb ? b / lb : 0}
+                        t = 0; m = 0; f = 0; o = ""
+                        for (c = 1; c <= 3; c++) { r = substr("ABX", c, 1); v[r] = cnt[h,r] ? sum[h,r] / cnt[h,r] : -1
+                            if (v[r] >= 0) { t += v[r]; m++; g = L[r] ? v[r] / L[r] : 0; f += g > 1 ? 1 : g }
+                            o = o " " (v[r] < 0 ? "-" : sprintf("%.1f", v[r])) }
                         avg = t / m; f = f / m
                         st = (la == 0 || lb == 0) ? "-" : (f * 100 >= ok ? "OK" : (f * 100 >= slow ? "SLOW" : "CRITICAL"))
-                        if (m < 2) st = st "(1rail)"
-                        printf "%s %.1f %s %s %s\n", h, avg, (a < 0 ? "-" : sprintf("%.1f", a)), (b < 0 ? "-" : sprintf("%.1f", b)), st
+                        if (v["A"] < 0 || v["B"] < 0) st = st "(1rail)"
+                        printf "%s %.1f%s %s\n", h, avg, o, st
                     }
                 }' "$map" - | { read -r hdr; echo "$hdr"; sort -k2 -n; } | column -t | sed 's/^/  /'
         else
@@ -1320,8 +1325,7 @@ main() {
     elif (( hosts_tested >= expect && paths_ok >= PATHS_PLANNED )); then coverage=COMPLETE; cov_rc=0
     else coverage=PARTIAL; cov_rc=3; fi
     local RESULT_LINE="RESULT coverage=$coverage hosts=$hosts_tested/$expect paths=$paths_ok/$PATHS_PLANNED skipped=$skipped no_result=$noresult"
-    [[ $CROSS == on ]] || RESULT_LINE+=" cross_rail=$CROSS"
-    (( CROSS_UNROUTED )) && RESULT_LINE+=" cross_rail=unrouted"
+    RESULT_LINE+=" cross_rail=$( (( CROSS_UNROUTED )) && echo unrouted || echo "$CROSS")"
     (( INPUT_RANGES )) && [[ -z $FS_EXPECT_HOSTS ]] && RESULT_LINE+=" (hosts expected = hosts found on the rails; set FS_EXPECT_HOSTS to check for missing ones)"
 
     local ts; ts=$(date -u +%Y%m%dT%H%M%SZ)
