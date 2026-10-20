@@ -10,6 +10,8 @@ Usage: FS_HOSTS=<targets> FS_RAIL_A=<cidr,...> FS_RAIL_B=<cidr,...> ./fabric_sle
 From a jump host (settings ride in the remote command; nothing to edit or copy first):
        ssh jump 'FS_HOSTS=10.1.0.0/24 FS_RAIL_A=... FS_RAIL_B=... bash -s -- 120' < fabric_sleuth_v2.sh
        The run ends by printing the scp + render line for the tarball it left on the jump host.
+The bundle also carries each host's system info (sysinfo/<host>/<item>: OS, CPU, PCIe, NIC rings/IRQs/QoS, routes,
+sysctls, kernel log over the run) and host_rx.txt, the per-host receive side (rings, PCIe, drops, iperf3 CPU, flags).
 
 Required
   FS_HOSTS   ssh targets, comma or space separated, any mix of:
@@ -436,12 +438,15 @@ for i in $(seq 20); do [ -z "$(pgrep -x iperf3)" ] && break; sleep 0.5; done
 for ip in "$@"; do iperf3 -s -D -B "$ip" -p "$port"; done
 EOF
 
-# One iperf3 run: src dst port streams secs [tos] -> "[SUM] ... receiver retransmits:N" or "ERROR ..."
+# One iperf3 run: src dst port streams secs [tos] -> "[SUM] ... receiver retransmits:N cpu:S/R" or "ERROR ..."
+# cpu: -V's process CPU % on the sender (client) and receiver (server); over 100 with iperf3 3.16+ threads, na if absent.
 read -r -d '' IPERF_SCRIPT <<'EOF'
-out=$(iperf3 --connect-timeout 5000 -c "$2" -B "$1" -p "$3" -P "$4" -t "$5" -f g -Z ${6:+-S $6} 2>&1); rc=$?
+out=$(iperf3 --connect-timeout 5000 -c "$2" -B "$1" -p "$3" -P "$4" -t "$5" -f g -Z -V ${6:+-S $6} 2>&1); rc=$?
 retr=$(echo "$out" | awk '/SUM.*sender/{print $(NF-1)}')
 rcv=$(echo "$out" | grep -m1 'SUM.*receiver')
-if [ -n "$rcv" ]; then echo "$rcv retransmits:${retr:-0}"
+cpu=$(echo "$out" | awk '/CPU Utilization/ {for (i = 1; i < NF; i++) {if ($i == "local/sender") s = $(i+1); if ($i == "remote/receiver") r = $(i+1)}}
+    END {gsub(/[%,]/, "", s); gsub(/[%,]/, "", r); print (s == "" ? "na" : s) "/" (r == "" ? "na" : r)}')
+if [ -n "$rcv" ]; then echo "$rcv retransmits:${retr:-0} cpu:$cpu"
 else echo "ERROR rc=$rc $(echo "$out" | grep -i -m1 error | tr -s ' ')"; fi
 EOF
 
@@ -461,6 +466,87 @@ u=$(awk '/^Udp:/ { n++; if (n == 1) split($0, k); else for (i = 2; i <= NF; i++)
     END { printf "%d %d %d", v["InErrors"], v["RcvbufErrors"], v["SndbufErrors"] }' /proc/net/snmp)
 d=0; while read -r a b rest; do d=$(( d + 16#$b )); done < /proc/net/softnet_stat
 echo "$h $u $d"
+EOF
+
+# System info, once per tested host: wekatester's set plus the receive path, as "=== SYSINFO <item> ===" sections
+# (split locally into sysinfo/<host>/<item>). Rail NICs are $@. A missing tool or file says "n/a: <why>", never a blank.
+read -r -d '' SYSINFO_SCRIPT <<'EOF'
+have() { [ -n "$(command -v "$1")" ]; }
+s() { echo "=== SYSINFO $1 ==="; }
+cmd() { if have "$1"; then "$@" 2>&1; else echo "n/a: $1 not installed"; fi; }
+f() { if [ -r "$1" ]; then cat "$1" 2>&1; else echo "n/a: $1 not readable"; fi; }
+s epoch; date +%s
+for p in cmdline mounts meminfo softirqs; do s $p; f /proc/$p; done
+s isolated; f /sys/devices/system/cpu/isolated
+s os-release; f /etc/os-release
+s uname; uname -a
+s uptime; cmd uptime
+s df; cmd df -kP
+s ip; ip -o addr 2>&1; ip -o link 2>&1
+s ip-rule; ip rule 2>&1
+s ip-route-all; ip route show table all 2>&1 | head -n 2000
+s lscpu; cmd lscpu
+s lspci; cmd lspci
+s numactl; cmd numactl --hardware
+s free; cmd free
+s iperf3; cmd iperf3 --version
+s weka; cmd weka local ps
+s chrony; if have chronyc; then chronyc tracking 2>&1; else cmd timedatectl status; fi
+s ofed; cmd ofed_info -s
+s dmidecode; cmd dmidecode -t bios -t system -t baseboard
+s sysctl
+for k in net/core/netdev_max_backlog net/core/netdev_budget net/core/rmem_max net/core/wmem_max net/ipv4/tcp_rmem \
+         net/ipv4/tcp_wmem net/ipv4/tcp_congestion_control net/ipv4/tcp_ecn; do echo "$k $(cat /proc/sys/$k 2>&1)"; done
+for n in all default "$@"; do
+    [ "$n" = - ] && continue
+    for k in rp_filter arp_ignore arp_announce; do echo "net/ipv4/conf/$n/$k $(cat /proc/sys/net/ipv4/conf/$n/$k 2>&1)"; done
+done
+s cpu-governor
+g=/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
+if [ -r $g ]; then cat /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor 2>&1 | sort | uniq -c
+else echo "n/a: no cpufreq governor (the BIOS or a VM controls frequency)"; fi
+s irqbalance; if [ -n "$(pgrep -x irqbalance)" ]; then echo running; else echo "not running"; fi
+for nic in "$@"; do
+    [ "$nic" = - ] && continue
+    dev=/sys/class/net/$nic/device; bus=$(basename "$(readlink -f $dev)")
+    s "nic-$nic"
+    echo "bus $bus"; echo "driver $(basename "$(readlink -f $dev/driver)")"; echo "numa_node $(cat $dev/numa_node 2>&1)"
+    for a in current_link_speed current_link_width max_link_speed max_link_width; do echo "$a $(cat $dev/$a 2>&1 | tr ' ' _)"; done
+    for a in correctable nonfatal fatal; do
+        echo "aer_$a $(awk '$1 ~ /^TOTAL_ERR/ {print $2; f = 1} END {if (!f) print "n/a"}' $dev/aer_dev_$a 2>&1)"
+    done
+    irqs=$(ls $dev/msi_irqs 2>&1); echo "msi_irqs $(echo "$irqs" | grep -c '^[0-9]')"
+    echo "irq_cpus $(for i in $irqs; do cat /proc/irq/$i/smp_affinity_list 2>&1; done | tr '\n' ' ')"
+    for o in -g -l -c -a; do echo "--- ethtool $o"; cmd ethtool $o "$nic"; done
+    echo "--- modinfo"; d=$(basename "$(readlink -f $dev/driver/module)"); cmd modinfo "$d" | head -n 12
+    echo "--- mlnx_qos"; cmd mlnx_qos -i "$nic"
+    echo "--- mlxconfig"; if have mlxconfig; then mlxconfig -d "$bus" q 2>&1 | head -n 400; else echo "n/a: mlxconfig not installed (MFT)"; fi
+done
+EOF
+
+# Receive-side host counters, read at each TCP phase boundary: "host key value". TCP from /proc/net/snmp and
+# netstat, softnet_stat summed over CPUs (hex), NET_RX softirqs, PCIe AER totals per rail NIC ($@).
+read -r -d '' HOSTCTR_SCRIPT <<'EOF'
+h=$(hostname -s)
+awk -v h="$h" -v want='^(RetransSegs|InErrs|TCPRcvQDrop|TCPBacklogDrop|TCPOFODrop|TCPOFOQueue|PruneCalled|RcvPruned|OfoPruned|TCPRcvCollapsed|TCPZeroWindowDrop|TCPLostRetransmit|TCPTimeouts|TCPMemoryPressures)$' '
+    $1 == "Tcp:" || $1 == "TcpExt:" { if (seen[$1]++ % 2 == 0) { for (i = 2; i <= NF; i++) n[i] = $i }
+                                      else for (i = 2; i <= NF; i++) if (n[i] ~ want) print h, n[i], $i }' /proc/net/snmp /proc/net/netstat
+p=0; d=0; q=0; while read -r a b c rest; do p=$(( p + 16#$a )); d=$(( d + 16#$b )); q=$(( q + 16#$c )); done < /proc/net/softnet_stat
+echo "$h softnet_processed $p"; echo "$h softnet_dropped $d"; echo "$h softnet_squeezed $q"
+awk -v h="$h" '$1 == "NET_RX:" {for (i = 2; i <= NF; i++) s += $i; print h, "softirq_net_rx", s}' /proc/softirqs
+for nic in "$@"; do
+    [ "$nic" = - ] && continue
+    for a in correctable nonfatal fatal; do
+        v=$(awk '$1 ~ /^TOTAL_ERR/ {print $2}' /sys/class/net/$nic/device/aer_dev_$a 2>&1)
+        case $v in ''|*[!0-9]*) ;; *) echo "$h aer_$a:$nic $v" ;; esac
+    done
+done
+EOF
+
+# Kernel log since the run began, by the host's own clock ($1 = its epoch from the sysinfo capture)
+read -r -d '' KLOG_SCRIPT <<'EOF'
+if [ -n "$(command -v journalctl)" ] && out=$(journalctl -k --no-pager -o short-iso --since "@$1" 2>&1); then echo "$out" | tail -n 3000
+else echo "n/a: journalctl -k failed or missing (${out%%$'\n'*}); dmesg instead, last 500 lines of the boot"; dmesg -T 2>&1 | tail -n 500; fi
 EOF
 
 # ---------- helpers on discovery files ----------
@@ -749,6 +835,115 @@ collect_counters() {  # script outfile: run a counter script on every tested hos
         rbash "${T_TARGET[$k]}" "${RNIC[$k,0]}" "${RNIC[$k,1]}" <<<"$script" >> "$outfile" 2>> "$RUNLOG_SSH" &
     done
     wait
+}
+
+# System info per tested host, split into $SI/<host>/<item> (SYSINFO_SCRIPT)
+collect_sysinfo() {
+    local k f
+    log "System info: capturing on ${#ELIG[@]} hosts (bundle: sysinfo/<host>/)..."
+    for k in "${ELIG[@]}"; do
+        throttle
+        rbash "${T_TARGET[$k]}" "${RNIC[$k,0]}" "${RNIC[$k,1]}" <<<"$SYSINFO_SCRIPT" > "$WORK/si.$k" 2>> "$RUNLOG_SSH" &
+    done
+    wait
+    for k in "${ELIG[@]}"; do
+        f=$WORK/si.$k
+        if ! grep -q '^=== SYSINFO ' "$f"; then log "WARNING: ${T_HOST[$k]}: no system info captured (see ssh_errors.log)"; continue; fi
+        mkdir -p "$SI/${T_HOST[$k]}"
+        awk -v d="$SI/${T_HOST[$k]}" '/^=== SYSINFO [^ \/]+ ===$/ {if (o) close(o); o = d "/" $3; next} o {print > o}' "$f"
+    done
+}
+
+# Rail NIC receive config from the sysinfo capture: "host rail numa ring_cur/max pcie_GTs x width cur/max"
+rx_config() {
+    local k r f
+    for k in "${ELIG[@]}"; do for r in 0 1; do
+        f=$SI/${T_HOST[$k]}/nic-${RNIC[$k,$r]}
+        [[ ${RNIC[$k,$r]} != - && -f $f ]] || continue
+        awk -v h="${T_HOST[$k]}" -v r=$(rail_letter $r) '
+            $1 == "numa_node" { numa = $2 }
+            $1 ~ /^(current|max)_link_(speed|width)$/ { v = $2; sub(/[^0-9.].*/, "", v); L[$1] = v }
+            /^--- / { sec = $3; g = "" }
+            sec == "-g" && /^Pre-set maximums/ { g = "max" }
+            sec == "-g" && /^Current hardware/ { g = "cur" }
+            sec == "-g" && $1 == "RX:" && g != "" && !(g in R) { R[g] = $2 }
+            END { ring = ("cur" in R && "max" in R) ? R["cur"] "/" R["max"] : "-"
+                  pc = (L["current_link_speed"] != "" && L["max_link_speed"] != "") ? \
+                       L["current_link_speed"] "x" L["current_link_width"] "/" L["max_link_speed"] "x" L["max_link_width"] : "-"
+                  print h, r, (numa ~ /^-?[0-9]+$/ ? numa : "-"), ring, pc }' "$f"
+    done; done
+}
+
+# hostctr_delta label pre post: receive counters that rose -> host_counters.txt "label host key delta"
+hostctr_delta() {
+    awk -v t="$1" 'NR == FNR {p[$1 " " $2] = $3; next}
+        ($1 " " $2) in p && $3 ~ /^[0-9]+$/ && $3 > p[$1 " " $2] {print t, $1, $2, $3 - p[$1 " " $2]}' "$2" "$3" > "$WORK/hc_delta"
+    cat "$WORK/hc_delta" >> "$COLLECT_DIR/host_counters.txt"
+}
+
+# Kernel log per host since its own sysinfo epoch -> $SI/<host>/kernel-log
+collect_klog() {
+    local k e
+    for k in "${ELIG[@]}"; do
+        e=$(cat "$SI/${T_HOST[$k]}/epoch" 2>&1); [[ $e =~ ^[0-9]+$ ]] || continue
+        throttle
+        rbash "${T_TARGET[$k]}" "$e" <<<"$KLOG_SCRIPT" > "$SI/${T_HOST[$k]}/kernel-log" 2>> "$RUNLOG_SSH" &
+    done
+    wait
+}
+
+# Kernel log lines that point at the receive path or the NIC (a match is a lead, not a verdict)
+KLOG_RE='aer|pcie bus error|link is down|tx timeout|transmit timeout|watchdog|hung_task|blocked for more than|out of memory|oom-kill|mlx5.*(err|fail|timeout|health)'
+
+# host_rx.txt: per host, rail NIC config + receive counters over the run + iperf3 CPU + kernel log leads, with flags.
+# Files: nicmap, ipmap, rx config, hostinfo (host governor irqbalance klog_hits), TCP results, host_counters, prio_counters.
+HOSTRX_AWK='
+# by argument position, not FNR: an empty file (no counter rose) has no first line and would shift the count
+FNR == 1 { for (f = 1; f < ARGC; f++) if (ARGV[f] == FILENAME) break }
+f == 1 { nh[$1] = $2; next }
+f == 2 { ih[$1] = $2; next }
+f == 3 { hosts[$1] = 1; numa[$1, $2] = $3; ring[$1, $2] = $4; pcie[$1, $2] = $5
+         if (split($4, x, "/") == 2 && x[1] + 0 < x[2] + 0) fl[$1] = fl[$1] ",ring" $2 "<max"
+         if (split($5, y, "/") == 2) { split(y[1], c, "x"); split(y[2], m, "x"); if (c[1] + 0 < m[1] + 0 || c[2] + 0 < m[2] + 0) fl[$1] = fl[$1] ",pcie" $2 "<max" }
+         next }
+f == 4 { gov[$1] = $2; irq[$1] = $3; kl[$1] = $4; hosts[$1] = 1
+         if ($2 != "-" && $2 != "performance") fl[$1] = fl[$1] ",gov:" $2; if ($4 > 0) fl[$1] = fl[$1] ",klog"; next }
+f == 5 { split($1, ip, ","); for (i = 1; i <= NF; i++) if ($i ~ /^cpu:/) { split(substr($i, 5), u, "/")
+             if (u[2] ~ /^[0-9.]+$/ && (!(ih[ip[2]] in rc) || u[2] + 0 > rc[ih[ip[2]]])) rc[ih[ip[2]]] = u[2] + 0
+             if (u[1] ~ /^[0-9.]+$/ && (!(ih[ip[1]] in sc) || u[1] + 0 > sc[ih[ip[1]]])) sc[ih[ip[1]]] = u[1] + 0 }
+         next }
+f == 6 { k = $3; sub(/:.*/, "", k)
+         if (k == "softnet_dropped") sd[$2] += $4; else if (k == "softnet_squeezed") sq[$2] += $4
+         else if (k ~ /^(TCPRcvQDrop|TCPBacklogDrop|TCPOFODrop|RcvPruned|OfoPruned|TCPZeroWindowDrop)$/) td[$2] += $4
+         else if (k ~ /^aer_/) ae[$2] += $4
+         next }
+f == 7 { if ($3 !~ /^rdma:/ && tolower($3) ~ /discard|out_of_buffer/) nd[nh[$2]] += $4 }
+function v(a, k) { return (k in a) ? a[k] : "-" }
+END {
+    print "Host NUMA_A/B Ring_A Ring_B PCIe_A PCIe_B Governor IRQbal RcvCPU% SndCPU% Softnet_drop Squeeze TCP_rcv_drop NIC_discard AER Klog Flags"
+    for (h in hosts) {
+        if (sd[h] > 0) fl[h] = fl[h] ",softnet_drop"; if (td[h] > 0) fl[h] = fl[h] ",tcp_rcv_drop"
+        if (nd[h] > 0) fl[h] = fl[h] ",nic_discard"; if (ae[h] > 0) fl[h] = fl[h] ",aer"
+        if ((h in rc) && rc[h] >= 90) fl[h] = fl[h] ",rcv_cpu>=90"
+        printf "%s %s/%s %s %s %s %s %s %s %s %s %d %d %d %d %d %s %s\n", h, v(numa, h SUBSEP "A"), v(numa, h SUBSEP "B"),
+            v(ring, h SUBSEP "A"), v(ring, h SUBSEP "B"), v(pcie, h SUBSEP "A"), v(pcie, h SUBSEP "B"), v(gov, h), v(irq, h),
+            ((h in rc) ? rc[h] : "-"), ((h in sc) ? sc[h] : "-"), sd[h], sq[h], td[h], nd[h], ae[h], v(kl, h), (fl[h] == "" ? "-" : substr(fl[h], 2))
+    }
+}'
+
+host_rx() {  # writes $COLLECT_DIR/host_rx.txt and prints the flagged hosts
+    local k h g i n
+    rx_config > "$WORK/rxcfg"
+    for k in "${ELIG[@]}"; do
+        h=${T_HOST[$k]}
+        g=-; [[ -f $SI/$h/cpu-governor ]] && g=$(awk '$1 ~ /^[0-9]+$/ {printf "%s%s", s, $2; s = "+"} /^n\/a/ {printf "-"}' "$SI/$h/cpu-governor")
+        i=$(cat "$SI/$h/irqbalance" 2>&1); [[ $i == running ]] && i=on || { [[ $i == "not running" ]] && i=off || i=-; }
+        n=-; [[ -f $SI/$h/kernel-log ]] && n=$(grep -c -i -E "$KLOG_RE" "$SI/$h/kernel-log")
+        echo "$h ${g:--} $i $n"
+    done > "$WORK/hostinfo"
+    grep "Gbits/sec" "$1" > "$WORK/rx_results"
+    awk "$HOSTRX_AWK" "$WORK/nicmap" "$WORK/ipmap" "$WORK/rxcfg" "$WORK/hostinfo" "$WORK/rx_results" \
+        "$COLLECT_DIR/host_counters.txt" "$COLLECT_DIR/prio_counters.txt" | { read -r hdr; echo "$hdr"; sort -V; } > "$COLLECT_DIR/host_rx.txt"
 }
 
 # UDP loss placement, the same rule as the dashboard: per phase and receiving host,
@@ -1046,6 +1241,7 @@ main() {
     SOCKET_DIR=$(mktemp -d /tmp/fs_ssh.XXXXXX)
     COLLECT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/dp_validation_XXXXXX")
     RAW_DIR=$COLLECT_DIR/raw_per_host; mkdir -p "$RAW_DIR" "$WORK/disc" "$WORK/sweep"
+    SI=$COLLECT_DIR/sysinfo
     RUNLOG_SSH=$COLLECT_DIR/ssh_errors.log
 
     SUDO=""; [[ $FS_SSH_USER == root ]] || SUDO="sudo -n"
@@ -1284,6 +1480,11 @@ main() {
     fi
 
     lock_all touch   # preflight can be long (mesh); refresh before load
+    collect_sysinfo
+    rx_config > "$WORK/rxcfg"
+    log "Rail NIC receive config: $(awk '{ n++; if (split($4, x, "/") == 2 && x[1] + 0 < x[2] + 0) r++
+        if (split($5, y, "/") == 2) { split(y[1], c, "x"); split(y[2], m, "x"); if (c[1] + 0 < m[1] + 0 || c[2] + 0 < m[2] + 0) p++ } }
+        END { printf "%d NICs read; rx ring below its maximum on %d, PCIe link below its maximum on %d", n, r, p }' "$WORK/rxcfg")"
     # --- 5. iperf3 servers ---
     LOADED=1
     log "Stopping stray iperf3 and starting servers on port $FS_PORT..."
@@ -1336,7 +1537,7 @@ main() {
     (( FS_ITER > rounds && FS_ITER <= 2 * rounds )) && log "Iterations $(( rounds + 1 ))-$FS_ITER repeat the pairings with client and server swapped"
     (( FS_ITER > 2 * rounds )) && log "Iterations past $(( 2 * rounds )) repeat the pairings from the start"
     [[ -n $FS_TOS ]] && log "Marking: iperf3 -S $FS_TOS = DSCP $(( FS_TOS >> 2 )), ECN bits $(( FS_TOS & 3 )) (TCP: the kernel owns the ECN bits)"
-    : > "$COLLECT_DIR/pairs.txt"; : > "$COLLECT_DIR/prio_counters.txt"; : > "$COLLECT_DIR/fec_rates.txt"
+    : > "$COLLECT_DIR/pairs.txt"; : > "$COLLECT_DIR/prio_counters.txt"; : > "$COLLECT_DIR/fec_rates.txt"; : > "$COLLECT_DIR/host_counters.txt"
     # rail IP -> host/rail, and host_nic -> host, for the summary and UDP loss placement
     for k in "${ELIG[@]}"; do
         [[ ${RIP[$k,0]} != none ]] && echo "${RIP[$k,0]} ${T_HOST[$k]} A"
@@ -1387,6 +1588,7 @@ main() {
         collect_drops "$DROPS_PRE"
         collect_counters "$PRIO_SCRIPT" "$WORK/prio_pre"
         collect_counters "$FEC_SCRIPT" "$WORK/fec_pre"; local fec_t0; fec_t0=$(date +%s)
+        collect_counters "$HOSTCTR_SCRIPT" "$WORK/hc.pre"; local hc_prev=$WORK/hc.pre
         for PHASE in 1 2; do
             PHASE_OUT=$WORK/phase.$ITER.$PHASE; : > "$PHASE_OUT"
             if [[ $PHASE == 2 && $CROSS != on ]]; then log "Phase 2: skipped (cross-rail $CROSS)"; continue; fi
@@ -1401,6 +1603,11 @@ main() {
             else xwaves "$RESULTS"; fi
             local errs; errs=$(grep -c ',ERROR' "$PHASE_OUT")
             [[ $errs -gt 0 ]] && log "WARNING: $errs runs in phase $PHASE returned no result (lines with ERROR above)"
+            collect_counters "$HOSTCTR_SCRIPT" "$WORK/hc.$PHASE"; hostctr_delta "iter${ITER}_p$PHASE" "$hc_prev" "$WORK/hc.$PHASE"; hc_prev=$WORK/hc.$PHASE
+            local hd; hd=$(awk '$3 ~ /^(softnet_dropped|softnet_squeezed|TCPRcvQDrop|TCPBacklogDrop|TCPOFODrop|RcvPruned|OfoPruned|TCPZeroWindowDrop|TCPMemoryPressures|aer_)/' "$WORK/hc_delta" | sort -k4 -rn)
+            if [[ -n $hd ]]; then
+                log "  Host receive drops/squeezes in phase $PHASE ($(echo "$hd" | wc -l | tr -d ' ') counters rose; top 5): $(echo "$hd" | head -n 5 | awk '{printf "%s%s %s +%d", s, $2, $3, $4; s = "; "}')"
+            else log "  No host receive drop counter rose in phase $PHASE ($(wc -l < "$WORK/hc.$PHASE" | tr -d ' ') counters read)"; fi
         done
         [[ $FS_UDP == 1 ]] && udp_phases
         collect_drops "$DROPS_POST"
@@ -1454,6 +1661,9 @@ main() {
         echo
     done
 
+    collect_klog
+    host_rx "$RESULTS"
+
     # --- 7. summary ---
     local LABEL=${FS_LABEL:-$FIRST_HOST}
     LABEL=${LABEL//[^A-Za-z0-9_.-]/_}
@@ -1493,6 +1703,11 @@ main() {
         else
             echo "  No iperf3 results collected."
         fi
+        echo ""
+        # receive side: flagged hosts only; every host's row is in host_rx.txt and on the dashboard
+        local nrx nfl; nrx=$(( $(wc -l < "$COLLECT_DIR/host_rx.txt") - 1 )); nfl=$(awk 'NR > 1 && $NF != "-"' "$COLLECT_DIR/host_rx.txt" | wc -l | tr -d ' ')
+        echo "Host-side receive: $nfl of $nrx hosts flagged (host_rx.txt; PCIe as GT/s x width, current/max; CPU % per iperf3 process, max over runs):"
+        (( nfl > 0 )) && awk 'NR == 1 || $NF != "-"' "$COLLECT_DIR/host_rx.txt" | column -t | sed 's/^/  /'
         echo ""
         echo "  Hosts on the rails: ${#ELIG[@]}, with a result: $(grep 'Gbits/sec' "$RESULTS" | awk -F'[, ]+' 'NR==FNR {h[$1]=$2; next} {print h[$1]; print h[$2]}' "$WORK/ipmap" - | sort -u | grep -c .) | Rails unusable: $(awk 'NR > 1 {n += ($6 != "ok") + ($10 != "ok")} END {print n + 0}' "$COLLECT_DIR/rails.txt") (rails.txt) | TCP paths skipped: $(awk '$2 ~ /^[12]$/' "$PATH_EXCL" | wc -l | tr -d ' ') (paths_excluded.txt)"
         echo "  Runs with no result: $(grep -c ',ERROR' "$RESULTS")"
@@ -1571,6 +1786,7 @@ main() {
         echo "directed_paths=${#DIRECTED[@]}"
         echo "directed_paths_total=$DIRECTED_TOTAL"
         echo "cross_max=${FS_CROSS_MAX:-none}"
+        echo "sysinfo_hosts=$( [[ -d $SI ]] && ls "$SI" | wc -l | tr -d " " || echo 0)"
         echo "cross_rail=$( (( CROSS_UNROUTED )) && echo unrouted || echo "$CROSS")"
         echo "paths_ok=$paths_ok"
         echo "drop_nics_read_min=$DROP_READS_MIN"

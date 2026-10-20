@@ -335,6 +335,7 @@ counters on {len(exposed)} of {len(fr)} rail NICs{f' ({n_off} with FEC off)' if 
 
     # Fail-loud banner: incomplete or empty data must not read as a clean result
     uplinks_html = _uplinks_html(_uplinks(data))
+    host_rx_html = _host_rx_html(data.get('host_rx'))
     problems_html = ''
     if data.get('problems') or data.get('notes'):
         items = ''.join(f'<li>{escape(p)}</li>' for p in data.get('problems', []))
@@ -457,6 +458,7 @@ td.dt-row-num {{ color: #556; font-size: 0.8em; text-align: right; width: 30px; 
 </div>
 {problems_html}
 {uplinks_html}
+{host_rx_html}
 {compare_html}
 {preflight_html}
 {fec_html}
@@ -1737,6 +1739,26 @@ def _uplinks(data):
     return u
 
 
+def _host_rx_html(rx):
+    """Host-side receive card: rail NIC config, receive counters over the run, iperf3 CPU, kernel log leads."""
+    if not rx:
+        return ('<div class="card mb-3"><div class="card-header">Host-side receive</div><div class="card-body">'
+                '<p class="text-warning mb-0">Not captured: this bundle is from a fabric_sleuth without system info capture.</p></div></div>')
+    rows = sorted(rx['rows'], key=lambda r: (r[-1] == '-', r[0]))   # flagged hosts first
+    nfl = sum(1 for r in rows if r[-1] != '-')
+    body = ''.join('<tr>' + ''.join(f'<td>{escape(c)}</td>' for c in r[:-1])
+                   + (f'<td class="text-danger">{escape(r[-1].replace(",", ", "))}</td>' if r[-1] != '-' else '<td>-</td>') + '</tr>'
+                   for r in rows)
+    note = ('Ring: rx ring current/max. PCIe: GT/s x width, current/max. CPU: iperf3 process %, max over runs (can pass 100 with '
+            'iperf3 3.16+ threads). Drops, discards, AER: increases during the TCP phases. Klog: kernel log lines naming AER, PCIe, '
+            'link down, timeouts, hung tasks or OOM (a lead, not a verdict). Raw per-host system info: sysinfo/&lt;host&gt;/ in the bundle.')
+    return (f'<div class="card mb-3"><div class="card-header">Host-side receive: {nfl} of {len(rows)} hosts flagged</div>'
+            f'<div class="card-body" style="max-height:420px; overflow-y:auto;">'
+            f'<p class="mb-1" style="font-size:0.8rem; color:#8899aa;">{note}</p>'
+            f'<table class="table table-sm table-striped"><thead><tr>{"".join(f"<th>{escape(c)}</th>" for c in rx["head"])}</tr></thead>'
+            f'<tbody>{body}</tbody></table></div></div>')
+
+
 def _uplinks_html(u):
     if not u:
         return ''
@@ -1919,7 +1941,7 @@ def parse_tar_archive(filepath):
         if mm:
             cur_iter, cur_phase, cur_wave = int(mm.group(1)), int(mm.group(2)), mm.group(3) or ''
             continue
-        m = re.match(r'^(\S+),(\S+),\[SUM\]\s+\S+\s+sec\s+([\d.]+)\s+([KMGTP]?)Bytes\s+([\d.]+)\s+Gbits/sec\s+receiver\s*(?:retransmits:(\d+))?', line)
+        m = re.match(r'^(\S+),(\S+),\[SUM\]\s+\S+\s+sec\s+([\d.]+)\s+([KMGTP]?)Bytes\s+([\d.]+)\s+Gbits/sec\s+receiver\s*(?:retransmits:(\d+))?(?:\s+cpu:(\S+))?', line)
         if m:
             bval = float(m.group(3))
             bunit = m.group(4) or ''
@@ -1930,8 +1952,12 @@ def parse_tar_archive(filepath):
                 'src': m.group(1), 'dst': m.group(2),
                 'gbytes': gbytes, 'gbps': round(float(m.group(5)), 1),
                 'retransmits': int(m.group(6)) if m.group(6) else 0,
+                'cpu': m.group(7) or '',   # sender/receiver iperf3 CPU %, absent before -V
             })
 
+    # host-side receive table (collector host_rx.txt; absent before system info capture)
+    rx = [l.split() for l in read_file('host_rx.txt').splitlines() if l.strip()]
+    data['host_rx'] = {'head': rx[0], 'rows': rx[1:]} if rx else None
     data['_nic_diag_lines'] = read_file('nic_diagnostics.txt').splitlines()   # for --compare
     # NIC diagnostics
     optics_by_key = {}  # (host, nic) -> optics entry, for dedup with raw fallback
