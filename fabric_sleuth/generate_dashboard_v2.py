@@ -745,7 +745,7 @@ td.dt-row-num {{ color: #556; font-size: 0.8em; text-align: right; width: 30px; 
         </div>
         <div class="card-body">
             <table class="table table-sm table-striped table-hover" id="allResultsTable">
-            <thead><tr><th>#</th><th>Host</th><th>Gbps<small>avg of NIC A &amp; B medians</small></th><th>Retrans<small>total TCP retransmits</small></th><th>IP A</th><th>Dev A</th><th>A Median<small>median Gbps across NIC A tests</small></th><th>A Retrans<small>total retransmits, NIC A</small></th><th>IP B</th><th>Dev B</th><th>B Median<small>median Gbps across NIC B tests</small></th><th>B Retrans<small>total retransmits, NIC B</small></th><th>Cross Median<small>median Gbps across A&lt;-&gt;B tests (a path, not a NIC)</small></th></tr></thead>
+            <thead><tr><th>#</th><th>Host</th><th>Status<small>worst of A, B, Cross (means)</small></th><th>Gbps<small>avg of NIC A &amp; B medians</small></th><th>Retrans<small>total TCP retransmits</small></th><th>IP A</th><th>Dev A</th><th>A Median<small>median Gbps across NIC A tests</small></th><th>A Retrans<small>total retransmits, NIC A</small></th><th>IP B</th><th>Dev B</th><th>B Median<small>median Gbps across NIC B tests</small></th><th>B Retrans<small>total retransmits, NIC B</small></th><th>Cross Median<small>median Gbps across A&lt;-&gt;B tests (a path, not a NIC)</small></th></tr></thead>
             <tbody></tbody></table>
         </div>
     </div>
@@ -924,6 +924,15 @@ $(document).ready(function() {{
             else {{ perHost[h].bGbps.push(r.gbps); perHost[h].bRetr += retr; perHost[h].bGB += gb; }}
         }});
     }});
+    // Status, as in the collector summary: the worst column, each its mean judged at its rail's cut-offs (Cross at
+    // the slower rail's); (cross) = only Cross is that bad; (1rail) = a rail without same-rail runs.
+    function hostStatus(h) {{
+        function lv(arr, rl) {{ if (!arr.length) return -1; var m = arr.reduce(function(a, b) {{ return a + b; }}, 0) / arr.length, t = railTiers[rl]; return m >= t.F ? 0 : m >= t.S ? 1 : 2; }}
+        var a = lv(h.aGbps, 'A'), b = lv(h.bGbps, 'B'), x = lv(h.xGbps, 'X'), ws = Math.max(a, b), w = Math.max(ws, x);
+        if (w < 0) return '-';
+        return ['OK', 'SLOW', 'CRITICAL'][w] + (ws >= 0 && w > ws ? '(cross)' : '') + (a < 0 || b < 0 ? '(1rail)' : '');
+    }}
+    function statusBadge(s) {{ return '<span class="badge ' + (s.indexOf('OK') === 0 ? 'badge-ok' : s.indexOf('SLOW') === 0 ? 'badge-slow' : s === '-' ? '' : 'badge-down') + '">' + s + '</span>'; }}
     var hostRows = [];
     Object.values(perHost).forEach(function(h) {{
         var aDown = h.ipA && downIps.has(h.ipA);
@@ -937,7 +946,7 @@ $(document).ready(function() {{
         var totalRetr = h.aRetr + h.bRetr + h.xRetr;
         var totalGB = h.aGB + h.bGB + h.xGB;
         var xMed = h.xGbps.length ? median(h.xGbps) : null;
-        hostRows.push({{ host: h.host, gbps: gbps, nicDown: nicDown, ipA: h.ipA || '-', nicA: aName, aMed: aMed, ipB: h.ipB || '-', nicB: bName, bMed: bMed, xMed: xMed, aDown: aDown, bDown: bDown, aRetr: h.aRetr, bRetr: h.bRetr, totalRetr: totalRetr, aGB: h.aGB, bGB: h.bGB, totalGB: totalGB }});
+        hostRows.push({{ host: h.host, status: hostStatus(h), gbps: gbps, nicDown: nicDown, ipA: h.ipA || '-', nicA: aName, aMed: aMed, ipB: h.ipB || '-', nicB: bName, bMed: bMed, xMed: xMed, aDown: aDown, bDown: bDown, aRetr: h.aRetr, bRetr: h.bRetr, totalRetr: totalRetr, aGB: h.aGB, bGB: h.bGB, totalGB: totalGB }});
     }});
 
     function nicBadge(val, isDown, rl) {{
@@ -1058,7 +1067,7 @@ $(document).ready(function() {{
             hostRows.forEach(function(r) {{
                 if (rawExcludedHosts.has(r.host)) return;
                 if (rawLastThreshold > 0 && (r.gbps === null || r.gbps < rawLastThreshold)) return;
-                tbody += '<tr><td></td><td>' + r.host + '</td>';
+                tbody += '<tr><td></td><td>' + r.host + '</td><td>' + statusBadge(r.status) + '</td>';
                 if (r.gbps === null) {{
                     tbody += '<td><span class="badge badge-down">NA</span> <small style="color:#e94560;">' + r.nicDown + ' down</small></td>';
                 }} else {{
@@ -1070,9 +1079,9 @@ $(document).ready(function() {{
                 tbody += '<td>' + (r.xMed === null ? '-' : nicBadge(r.xMed, false, 'X')) + '</td></tr>';
                 shown++;
             }});
-            $('#allResultsTable thead tr').html('<th>#</th><th>Host</th><th>Gbps<small>avg of NIC A &amp; B medians</small></th><th>Retrans<small>total TCP retransmits</small></th><th>IP A</th><th>Dev A</th><th>A Median<small>median Gbps across NIC A tests</small></th><th>A Retrans<small>total retransmits, NIC A</small></th><th>IP B</th><th>Dev B</th><th>B Median<small>median Gbps across NIC B tests</small></th><th>B Retrans<small>total retransmits, NIC B</small></th><th>Cross Median<small>median Gbps across A&lt;-&gt;B tests (a path, not a NIC)</small></th>');
+            $('#allResultsTable thead tr').html('<th>#</th><th>Host</th><th>Status<small>worst of A, B, Cross (means)</small></th><th>Gbps<small>avg of NIC A &amp; B medians</small></th><th>Retrans<small>total TCP retransmits</small></th><th>IP A</th><th>Dev A</th><th>A Median<small>median Gbps across NIC A tests</small></th><th>A Retrans<small>total retransmits, NIC A</small></th><th>IP B</th><th>Dev B</th><th>B Median<small>median Gbps across NIC B tests</small></th><th>B Retrans<small>total retransmits, NIC B</small></th><th>Cross Median<small>median Gbps across A&lt;-&gt;B tests (a path, not a NIC)</small></th>');
             $('#allResultsTable tbody').html(tbody);
-            rawDT = $('#allResultsTable').DataTable(dtOpts({{ pageLength: 50, order: [[2, 'asc']] }}));
+            rawDT = $('#allResultsTable').DataTable(dtOpts({{ pageLength: 50, order: [[3, 'asc']] }}));
         }}
         document.getElementById('rawFilterCount').textContent =
             (rawExcludedHosts.size > 0 ? rawExcludedHosts.size + ' excluded, ' : '') +
@@ -1603,6 +1612,44 @@ def _cross(r, ip_rail):
     return bool(a and b and a != b)
 
 
+def _cross_finding(data):
+    """Cross-rail total, and the shared-path finding when only cross-rail runs miss the OK cut-off (as the collector)."""
+    ipr, rt = data.get('ip_rail', {}), data.get('rail_tiers', {})
+    res = [r for r in data['iperf_results'] if ipr.get(r['src']) and ipr.get(r['dst'])]
+    xs = [r for r in res if _cross(r, ipr)]
+    if not xs:
+        return None, None
+    def med(v):
+        v, n = sorted(v), len(v)
+        return None if not n else v[n // 2] if n % 2 else (v[n // 2 - 1] + v[n // 2]) / 2
+    def bw(g):
+        return f'{g / 1000:.2f} Tbps' if g >= 1000 else f'{g:.1f} Gbps'
+    def k(n):
+        return f'{n / 1e6:.1f}M' if n >= 1e6 else f'{n / 1e3:.1f}k' if n >= 1e4 else str(n)
+    tot = defaultdict(float)
+    for r in xs:
+        tot[r['iteration']] += r['gbps']
+    t = list(tot.values())
+    ab = sum(1 for r in xs if ipr[r['src']] == 'A')
+    xr = sum(r.get('retransmits', 0) for r in xs)
+    sr = sum(r.get('retransmits', 0) for r in res if not _cross(r, ipr))
+    xm = med([r['gbps'] for r in xs])
+    agg = (f'Cross-rail total: {bw(t[0])} over {len(xs)} flows run at once' if len(t) == 1 else
+           f'Cross-rail total per iteration: {bw(sum(t) / len(t))} on average ({bw(min(t))} to {bw(max(t))} '
+           f'over {len(t)} iterations), {len(xs)} flows')
+    agg += f' (A->B {ab}, B->A {len(xs) - ab}); median {xm:.1f} Gbps per flow; retransmits {k(xr)} cross-rail vs {k(sr)} same-rail'
+    cut = {x: rt.get(x, data['tiers'])['F'] for x in ('A', 'B')}
+    sm = {x: med([r['gbps'] for r in res if ipr[r['src']] == x and ipr[r['dst']] == x]) for x in ('A', 'B')}
+    fx = min(cut.values())
+    shared = None
+    if xm < fx and any(v is not None for v in sm.values()) and all(v is None or v >= cut[x] for x, v in sm.items()):
+        f = lambda v: '-' if v is None else f'{v:.1f}'
+        shared = (f"Same-rail runs are OK, cross-rail runs are not: cross-rail median {xm:.1f} Gbps per flow (OK >= {fx:g}), "
+                  f"same-rail median {f(sm['A'])} (A) / {f(sm['B'])} (B) Gbps. The hosts pass on their own rail, so the likely "
+                  'limit is the shared path between the rails (switch inter-link or spine), not the hosts.')
+    return agg, shared
+
+
 def _ip_speeds(results, ip_rail):
     """Per-IP Gbps from same-rail runs; an IP with none falls back to its cross-rail runs (the returned set)."""
     same, cross = defaultdict(list), defaultdict(list)
@@ -2044,15 +2091,19 @@ def parse_tar_archive(filepath):
     if xr == 'unrouted':
         notes.append('Rails not routed to each other: every A<->B path check failed on routing, no same-rail one did. '
                      'Either separate fabrics by design (rerun with FS_CROSS_RAIL=0) or inter-rail routing missing on '
-                     'every host; the skipped A->B paths count until the operator says which.')
+                     'every host; the skipped A<->B paths count until the operator says which.')
     elif xr == 'off':
-        notes.append('Cross-rail phase (A->B) not run: FS_CROSS_RAIL=0 (operator: rails are separate fabrics).')
+        notes.append('Cross-rail phase (A<->B) not run: FS_CROSS_RAIL=0 (operator: rails are separate fabrics).')
     xs = [r for r in data['iperf_results'] if _cross(r, data['ip_rail'])]
     fx = min(data.get('rail_tiers', {}).get(k, data['tiers'])['F'] for k in ('A', 'B'))
     slow_x = [r for r in xs if r['gbps'] < fx]
     if slow_x:
+        agg, shared = _cross_finding(data)
         problems.append(f'{len(slow_x)} of {len(xs)} cross-rail (A<->B) runs below {fx:g} Gbps. Per-IP and per-rail figures '
-                        'leave cross-rail runs out, so look at the path between the rails (spine, inter-rail routing).')
+                        'leave cross-rail runs out, so look at the path between the rails (spine, inter-rail routing). '
+                        + (agg + '.' if agg else ''))
+        if shared:
+            problems.append(shared)
     if 'coverage' not in meta:
         notes.append('Archive from a collector without coverage counts (v1 or earlier): only result and iteration checks apply.')
     data['problems'], data['notes'] = problems, notes

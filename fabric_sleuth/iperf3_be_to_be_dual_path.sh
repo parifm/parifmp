@@ -47,6 +47,9 @@ Optional (default)
                    speed for both, so a rail that came up slow everywhere shows as slow
   FS_OK_PCT        OK at or above this % of link speed (75)
   FS_SLOW_PCT      SLOW at or above this %, CRITICAL below (50)
+                   Each iteration: phase 1 same rail (A->A, B->B); phase 2 cross-rail, one flow each
+                   way per pair (A->B and B->A at once). Host Status = the worst of Rail_A, Rail_B
+                   and Cross; SLOW(cross)/CRITICAL(cross) = only the cross-rail runs were that slow.
   FS_BUSY_CHECK    command run on each host before any load; exit 0 = host is in
                    production use, 1 = idle, anything else = unknown (counts as in use).
                    Default: WEKA containers running (`weka local ps`); idle where WEKA
@@ -400,18 +403,26 @@ rail_ok() { [[ ${RSTATE[$1,$2]} == ok ]]; }
 
 # round_pairs r: round r of the circle method over ROT (even length, "-" = bye).
 # ROT[0] stays put and the rest rotate one place per round, so no pair repeats
-# until every pair has met (${#ROT[@]} - 1 rounds). Sets PC/PS (client/server) and SITOUT.
+# until every pair has met (${#ROT[@]} - 1 rounds). Sets PC/PS (client/server), PI (pair slot) and SITOUT.
 round_pairs() {
     local r=$1 m=${#ROT[@]} i a b
     local -a arr=("${ROT[0]}")
     for (( i = 0; i < m - 1; i++ )); do arr+=("${ROT[1 + (i + r) % (m - 1)]}"); done
-    PC=(); PS=(); SITOUT=""
+    PC=(); PS=(); PI=(); SITOUT=""
     for (( i = 0; i < m / 2; i++ )); do
         a=${arr[i]}; b=${arr[m - 1 - i]}
         if [[ $a == - ]]; then SITOUT=$b
         elif [[ $b == - ]]; then SITOUT=$a
-        else PC+=("$a"); PS+=("$b"); fi
+        else PC+=("$a"); PS+=("$b"); PI+=("$i"); fi
     done
+}
+
+# xpaths p: pair p's two phase 2 runs, one each way across the rails, in X1/X2 (src_k src_r dst_k dst_r).
+# Odd: client A <-> server B; even: client B <-> server A. A rotating host moves one slot per round, so slot
+# parity swaps its NIC each iteration; slot 0 (the fixed host) swaps by iteration.
+xpaths() {
+    local c=${PC[$1]} s=${PS[$1]} i=${PI[$1]}
+    if (( i ? i % 2 : ITER % 2 )); then X1=($c 0 $s 1); X2=($s 1 $c 0); else X1=($c 1 $s 0); X2=($s 0 $c 1); fi
 }
 
 # check_path key src_k src_r dst_k dst_r: writes OK or a reason to $PATHS/key
@@ -488,6 +499,32 @@ udp_attr() {  # [iterN Ux] -> "lost sent socket nic backlog unaccounted over"
         "$COLLECT_DIR/udp_host_counters.txt" "$COLLECT_DIR/udp_nic_drops.txt"
 }
 
+# cross_summary ipmap results: the inter-rail total (an iteration's cross-rail runs share the path between
+# the rails at once) and, when only cross-rail runs miss the OK cut-off, where to look.
+cross_summary() {
+    local x xm am bm
+    x=$(awk -F'[, ]+' 'NR == FNR { rail[$1] = $3; next }
+        /^### / { split($2, a, ":"); it = a[2]; next }
+        { g = -1; rt = 0
+          for (i = 1; i <= NF; i++) { if ($i == "Gbits/sec") g = $(i-1) + 0; if ($i ~ /^retransmits:/) { split($i, q, ":"); rt = q[2] + 0 } }
+          if (g >= 0 && ($1 in rail) && ($2 in rail)) print (rail[$1] == rail[$2] ? rail[$1] : rail[$1] ">" rail[$2]), it, g, rt }' "$1" "$2")
+    [[ $x == *'>'* ]] || return 0
+    med() { sort -n | awk '{v[NR] = $1} END {if (NR) printf "%.1f", NR % 2 ? v[(NR + 1) / 2] : (v[NR / 2] + v[NR / 2 + 1]) / 2}'; }
+    xm=$(awk '$1 ~ />/ {print $3}' <<<"$x" | med); am=$(awk '$1 == "A" {print $3}' <<<"$x" | med); bm=$(awk '$1 == "B" {print $3}' <<<"$x" | med)
+    awk -v xm="$xm" -v am="$am" -v bm="$bm" -v la="${LINE_A:-0}" -v lb="${LINE_B:-0}" -v ok="$FS_OK_PCT" '
+        function bw(g) { return g >= 1000 ? sprintf("%.2f Tbps", g / 1000) : sprintf("%.1f Gbps", g) }
+        function k(n) { return n >= 1e6 ? sprintf("%.1fM", n / 1e6) : (n >= 1e4 ? sprintf("%.1fk", n / 1e3) : n) }
+        $1 ~ />/ { nx++; d[$1]++; tot[$2] += $3; xr += $4; next }
+        { sr += $4 }
+        END { for (i in tot) { ni++; s += tot[i]; if (ni == 1 || tot[i] < lo) lo = tot[i]; if (ni == 1 || tot[i] > hi) hi = tot[i] }
+              if (ni == 1) printf "  Cross-rail total: %s over %d flows run at once", bw(s), nx
+              else printf "  Cross-rail total per iteration: %s on average (%s to %s over %d iterations), %d flows", bw(s / ni), bw(lo), bw(hi), ni, nx
+              printf " (A->B %d, B->A %d); median %s Gbps per flow; retransmits %s cross-rail vs %s same-rail\n", d["A>B"], d["B>A"], xm, k(xr), k(sr + 0)
+              lx = la < lb ? la : lb; ca = la * ok / 100; cb = lb * ok / 100; cx = lx * ok / 100
+              if (lx > 0 && xm + 0 < cx && (am != "" || bm != "") && (am == "" || am + 0 >= ca) && (bm == "" || bm + 0 >= cb))
+                  printf "  Same-rail runs are OK, cross-rail runs are not: cross-rail median %s Gbps per flow (OK >= %g), same-rail median %s (A) / %s (B) Gbps. The hosts pass on their own rail, so the likely limit is the shared path between the rails (switch inter-link or spine), not the hosts.\n", xm, cx, (am == "" ? "-" : am), (bm == "" ? "-" : bm) }' <<<"$x"
+}
+
 # UDP phases U1 (same rail) and U2 (cross) on the current pairs, with host and NIC
 # counters read around each phase so lost datagrams can be placed.
 udp_phases() {
@@ -495,12 +532,12 @@ udp_phases() {
     collect_counters "$UDPHOST_SCRIPT" "$a.host"; collect_drops "$a.nic"
     for u in 1 2; do
         PHASE=U$u; PHASE_OUT=$WORK/phase.$ITER.$PHASE; : > "$PHASE_OUT"
-        [[ $u == 1 ]] && log "Phase U1: UDP A->A and B->B at once (-b 0)" || log "Phase U2: UDP A->B both directions at once (-b 0)"
+        [[ $u == 1 ]] && log "Phase U1: UDP A->A and B->B at once (-b 0)" || log "Phase U2: UDP cross-rail, A->B and B->A at once (-b 0)"
         echo "### iteration:${ITER} phase:${PHASE}" >> "$UDP_RESULTS"
         for (( p = 0; p < ${#PC[@]}; p++ )); do
             ck=${PC[p]}; sk=${PS[p]}
             if [[ $u == 1 ]]; then run_path p1a_$p $ck 0 $sk 0 udp; run_path p1b_$p $sk 1 $ck 1 udp
-            else run_path p2a_$p $ck 0 $sk 1 udp; run_path p2b_$p $sk 0 $ck 1 udp; fi
+            else xpaths $p; run_path p2a_$p "${X1[@]}" udp; run_path p2b_$p "${X2[@]}" udp; fi
         done
         wait
         column -t < "$PHASE_OUT" | tee -a "$UDP_RESULTS"
@@ -877,7 +914,7 @@ main() {
         for (( p = 0; p < ${#PC[@]}; p++ )); do
             ck=${PC[p]}; sk=${PS[p]}
             check_path p1a_$p $ck 0 $sk 0; check_path p1b_$p $sk 1 $ck 1
-            check_path p2a_$p $ck 0 $sk 1; check_path p2b_$p $sk 0 $ck 1
+            xpaths $p; check_path p2a_$p "${X1[@]}"; check_path p2b_$p "${X2[@]}"
         done
         wait
         local bad; bad=$(grep -Lx OK "$PATHS"/* | wc -l | tr -d ' ')
@@ -892,12 +929,12 @@ main() {
         collect_counters "$PRIO_SCRIPT" "$WORK/prio_pre"
         for PHASE in 1 2; do
             PHASE_OUT=$WORK/phase.$ITER.$PHASE; : > "$PHASE_OUT"
-            [[ $PHASE == 1 ]] && log "Phase 1: A->A and B->B at once" || log "Phase 2: A->B both directions at once"
+            [[ $PHASE == 1 ]] && log "Phase 1: A->A and B->B at once" || log "Phase 2: cross-rail, A->B and B->A at once"
             echo "### iteration:${ITER} phase:${PHASE}" >> "$RESULTS"
             for (( p = 0; p < ${#PC[@]}; p++ )); do
                 ck=${PC[p]}; sk=${PS[p]}
                 if [[ $PHASE == 1 ]]; then run_path p1a_$p $ck 0 $sk 0; run_path p1b_$p $sk 1 $ck 1
-                else run_path p2a_$p $ck 0 $sk 1; run_path p2b_$p $sk 0 $ck 1; fi
+                else xpaths $p; run_path p2a_$p "${X1[@]}"; run_path p2b_$p "${X2[@]}"; fi
             done
             wait
             column -t < "$PHASE_OUT" | tee -a "$RESULTS"
@@ -964,26 +1001,29 @@ main() {
         if grep -q 'Gbits/sec' "$RESULTS"; then
             echo "Per-host throughput, worst first (Gbps; Rail_A/Rail_B: same-rail runs; Cross: A<->B runs, judged at the slower rail's rate):"
             # A cross-rail run measures a path, not either rail (routes decide which NIC carries it), so it gets its own
-            # column. Status: each column's average as a share of its line rate (capped at 1), averaged over the columns.
+            # column. Status: the worst column, each its average judged at its own line rate (Cross: the slower rail's);
+            # (cross) = only Cross is that bad, the same-rail paths were better.
             grep 'Gbits/sec' "$RESULTS" | awk -F'[, ]+' -v la="${LINE_A:-0}" -v lb="${LINE_B:-0}" -v ok="$FS_OK_PCT" -v slow="$FS_SLOW_PCT" '
                 NR==FNR { host[$1]=$2; rail[$1]=$3; next }
                 { for (i = 1; i <= NF; i++) if ($i == "Gbits/sec") { s = $(i-1) + 0; break }
                   for (j = 1; j <= 2; j++) { ip = $j; r = rail[$1] == rail[$2] ? rail[ip] : "X"
                                              sum[host[ip], r] += s; cnt[host[ip], r]++; seen[host[ip]] = 1 } }
                 END {
-                    L["A"] = la; L["B"] = lb; L["X"] = la < lb ? la : lb
+                    L["A"] = la; L["B"] = lb; L["X"] = la < lb ? la : lb; N[0] = "OK"; N[1] = "SLOW"; N[2] = "CRITICAL"
                     print "Host Avg_Gbps Rail_A Rail_B Cross Status"
                     for (h in seen) {
-                        t = 0; m = 0; f = 0; o = ""
+                        t = 0; m = 0; w = 0; ws = -1; o = ""
                         for (c = 1; c <= 3; c++) { r = substr("ABX", c, 1); v[r] = cnt[h,r] ? sum[h,r] / cnt[h,r] : -1
-                            if (v[r] >= 0) { t += v[r]; m++; g = L[r] ? v[r] / L[r] : 0; f += g > 1 ? 1 : g }
+                            if (v[r] >= 0) { t += v[r]; m++; g = L[r] ? 100 * v[r] / L[r] : 0; lv = g >= ok ? 0 : (g >= slow ? 1 : 2)
+                                             if (lv > w) w = lv; if (r != "X" && lv > ws) ws = lv }
                             o = o " " (v[r] < 0 ? "-" : sprintf("%.1f", v[r])) }
-                        avg = t / m; f = f / m
-                        st = (la == 0 || lb == 0) ? "-" : (f * 100 >= ok ? "OK" : (f * 100 >= slow ? "SLOW" : "CRITICAL"))
+                        avg = t / m
+                        st = (la == 0 || lb == 0) ? "-" : N[w] (ws >= 0 && w > ws ? "(cross)" : "")
                         if (v["A"] < 0 || v["B"] < 0) st = st "(1rail)"
                         printf "%s %.1f%s %s\n", h, avg, o, st
                     }
                 }' "$map" - | { read -r hdr; echo "$hdr"; sort -k2 -n; } | column -t | sed 's/^/  /'
+            cross_summary "$map" "$RESULTS"
         else
             echo "  No iperf3 results collected."
         fi
