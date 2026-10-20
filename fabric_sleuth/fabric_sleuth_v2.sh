@@ -55,6 +55,8 @@ Optional (default)
   FS_CROSS_MAX=N   at most N cross-rail flows at once: phase 2 (and U2) run in balanced waves,
                    each flow for the full duration; keeps a shared inter-rail path from capping
                    every flow (unset: all at once)
+  FS_SYSINFO_TIMEOUT  seconds per host for the system info capture before load (300); a host that runs
+                   out keeps what it sent and is flagged sysinfo_partial
   FS_PORT          iperf3 port (5201)
   FS_SSH_USER      ssh user; non-root runs remote steps with sudo -n (root)
   FS_SSH_PARALLEL  ssh sessions at once for sweep and collection (64)
@@ -473,7 +475,11 @@ EOF
 read -r -d '' SYSINFO_SCRIPT <<'EOF'
 have() { [ -n "$(command -v "$1")" ]; }
 s() { echo "=== SYSINFO $1 ==="; }
-cmd() { if have "$1"; then "$@" 2>&1; else echo "n/a: $1 not installed"; fi; }
+to=""; have timeout && to=timeout   # an item that hangs (a stale mount under df, say) costs its section, not the host
+cmd() {   # T=seconds (20)
+    if ! have "$1"; then echo "n/a: $1 not installed"; return; fi
+    $to ${to:+${T:-20}} "$@" 2>&1; [ $? = 124 ] && echo "n/a: $1 timed out after ${T:-20}s"
+}
 f() { if [ -r "$1" ]; then cat "$1" 2>&1; else echo "n/a: $1 not readable"; fi; }
 s epoch; date +%s
 for p in cmdline mounts meminfo softirqs; do s $p; f /proc/$p; done
@@ -491,7 +497,7 @@ s numactl; cmd numactl --hardware
 s free; cmd free
 s iperf3; cmd iperf3 --version
 s weka; cmd weka local ps
-s chrony; if have chronyc; then chronyc tracking 2>&1; else cmd timedatectl status; fi
+s chrony; if have chronyc; then cmd chronyc tracking; else cmd timedatectl status; fi
 s ofed; cmd ofed_info -s
 s dmidecode; cmd dmidecode -t bios -t system -t baseboard
 s sysctl
@@ -520,7 +526,7 @@ for nic in "$@"; do
     for o in -g -l -c -a; do echo "--- ethtool $o"; cmd ethtool $o "$nic"; done
     echo "--- modinfo"; d=$(basename "$(readlink -f $dev/driver/module)"); cmd modinfo "$d" | head -n 12
     echo "--- mlnx_qos"; cmd mlnx_qos -i "$nic"
-    echo "--- mlxconfig"; if have mlxconfig; then mlxconfig -d "$bus" q 2>&1 | head -n 400; else echo "n/a: mlxconfig not installed (MFT)"; fi
+    echo "--- mlxconfig"; if have mlxconfig; then T=60 cmd mlxconfig -d "$bus" q | head -n 400; else echo "n/a: mlxconfig not installed (MFT)"; fi
 done
 EOF
 
@@ -545,7 +551,7 @@ EOF
 
 # Kernel log since the run began, by the host's own clock ($1 = its epoch from the sysinfo capture)
 read -r -d '' KLOG_SCRIPT <<'EOF'
-if [ -n "$(command -v journalctl)" ] && out=$(journalctl -k --no-pager -o short-iso --since "@$1" 2>&1); then echo "$out" | tail -n 3000
+if [ -n "$(command -v journalctl)" ] && out=$(timeout 60 journalctl -k --no-pager -o short-iso --since "@$1" 2>&1); then echo "$out" | tail -n 3000
 else echo "n/a: journalctl -k failed or missing (${out%%$'\n'*}); dmesg instead, last 500 lines of the boot"; dmesg -T 2>&1 | tail -n 500; fi
 EOF
 
@@ -839,16 +845,23 @@ collect_counters() {  # script outfile: run a counter script on every tested hos
 
 # System info per tested host, split into $SI/<host>/<item> (SYSINFO_SCRIPT)
 collect_sysinfo() {
-    local k f
-    log "System info: capturing on ${#ELIG[@]} hosts (bundle: sysinfo/<host>/)..."
+    local k f t
+    log "System info: capturing on ${#ELIG[@]} hosts, at most ${FS_SYSINFO_TIMEOUT}s each (bundle: sysinfo/<host>/)..."
     for k in "${ELIG[@]}"; do
         throttle
-        rbash "${T_TARGET[$k]}" "${RNIC[$k,0]}" "${RNIC[$k,1]}" <<<"$SYSINFO_SCRIPT" > "$WORK/si.$k" 2>> "$RUNLOG_SSH" &
+        ( timeout "$FS_SYSINFO_TIMEOUT" ssh "${SSH_OPTS[@]}" "${T_TARGET[$k]}" $SUDO bash -s -- "${RNIC[$k,0]}" "${RNIC[$k,1]}" \
+              <<<"$SYSINFO_SCRIPT" > "$WORK/si.$k" 2>> "$RUNLOG_SSH"; echo $? > "$WORK/si_rc.$k" ) &
     done
     wait
     for k in "${ELIG[@]}"; do
         f=$WORK/si.$k
         if ! grep -q '^=== SYSINFO ' "$f"; then log "WARNING: ${T_HOST[$k]}: no system info captured (see ssh_errors.log)"; continue; fi
+        if [[ $(cat "$WORK/si_rc.$k") == 124 ]]; then
+            log "WARNING: ${T_HOST[$k]}: system info cut off after ${FS_SYSINFO_TIMEOUT}s (FS_SYSINFO_TIMEOUT); the partial capture is kept"
+            SI_CUT[${T_HOST[$k]}]=1
+        fi
+        t=$(awk '/^=== SYSINFO / {s = $3} /^n\/a: .* timed out after/ {printf "%s%s", c, s; c = " "}' "$f")
+        [[ -n $t ]] && log "WARNING: ${T_HOST[$k]}: system info items timed out: $t"
         mkdir -p "$SI/${T_HOST[$k]}"
         awk -v d="$SI/${T_HOST[$k]}" '/^=== SYSINFO [^ \/]+ ===$/ {if (o) close(o); o = d "/" $3; next} o {print > o}' "$f"
     done
@@ -879,6 +892,9 @@ hostctr_delta() {
     awk -v t="$1" 'NR == FNR {p[$1 " " $2] = $3; next}
         ($1 " " $2) in p && $3 ~ /^[0-9]+$/ && $3 > p[$1 " " $2] {print t, $1, $2, $3 - p[$1 " " $2]}' "$2" "$3" > "$WORK/hc_delta"
     cat "$WORK/hc_delta" >> "$COLLECT_DIR/host_counters.txt"
+    # who answered this read, and with AER counters: a counter never read shows as "-" in host_rx.txt, not 0
+    awk '{n[$1]++; if ($2 ~ /^aer_/) a[$1] = 1} END {for (h in n) print h, ((h in a) ? 1 : 0)}' "$3" >> "$WORK/hc_reads"
+    HC_READS=$(( HC_READS + 1 ))
 }
 
 # Kernel log per host since its own sysinfo epoch -> $SI/<host>/kernel-log
@@ -907,6 +923,7 @@ f == 3 { hosts[$1] = 1; numa[$1, $2] = $3; ring[$1, $2] = $4; pcie[$1, $2] = $5
          if (split($5, y, "/") == 2) { split(y[1], c, "x"); split(y[2], m, "x"); if (c[1] + 0 < m[1] + 0 || c[2] + 0 < m[2] + 0) fl[$1] = fl[$1] ",pcie" $2 "<max" }
          next }
 f == 4 { gov[$1] = $2; irq[$1] = $3; kl[$1] = $4; hosts[$1] = 1
+         if ($5 == "missing") fl[$1] = fl[$1] ",sysinfo_missing"; else if ($5 == "cut") fl[$1] = fl[$1] ",sysinfo_partial"
          if ($2 != "-" && $2 != "performance") fl[$1] = fl[$1] ",gov:" $2; if ($4 > 0) fl[$1] = fl[$1] ",klog"; next }
 f == 5 { split($1, ip, ","); for (i = 1; i <= NF; i++) if ($i ~ /^cpu:/) { split(substr($i, 5), u, "/")
              if (u[2] ~ /^[0-9.]+$/ && (!(ih[ip[2]] in rc) || u[2] + 0 > rc[ih[ip[2]]])) rc[ih[ip[2]]] = u[2] + 0
@@ -917,33 +934,44 @@ f == 6 { k = $3; sub(/:.*/, "", k)
          else if (k ~ /^(TCPRcvQDrop|TCPBacklogDrop|TCPOFODrop|RcvPruned|OfoPruned|TCPZeroWindowDrop)$/) td[$2] += $4
          else if (k ~ /^aer_/) ae[$2] += $4
          next }
-f == 7 { if ($3 !~ /^rdma:/ && tolower($3) ~ /discard|out_of_buffer/) nd[nh[$2]] += $4 }
+f == 7 { if ($3 !~ /^rdma:/ && tolower($3) ~ /discard|out_of_buffer/) nd[nh[$2]] += $4; next }
+f == 8 { hr[$1] = $2; ha[$1] = $3; next }
+f == 9 { if ($2 !~ /^rdma:/ && tolower($2) ~ /discard|out_of_buffer/) dc[nh[$1]] = 1 }
 function v(a, k) { return (k in a) ? a[k] : "-" }
 END {
     print "Host NUMA_A/B Ring_A Ring_B PCIe_A PCIe_B Governor IRQbal RcvCPU% SndCPU% Softnet_drop Squeeze TCP_rcv_drop NIC_discard AER Klog Flags"
     for (h in hosts) {
-        if (sd[h] > 0) fl[h] = fl[h] ",softnet_drop"; if (td[h] > 0) fl[h] = fl[h] ",tcp_rcv_drop"
-        if (nd[h] > 0) fl[h] = fl[h] ",nic_discard"; if (ae[h] > 0) fl[h] = fl[h] ",aer"
+        # "-" = not read (ssh failed, no AER in sysfs, no discard counter on this driver): unknown, not zero
+        cr = (h in hr) ? hr[h] : 0
+        if (cr == 0) fl[h] = fl[h] ",counters_unread"; else if (cr < ns) fl[h] = fl[h] ",counters_partial"
+        SD = cr ? sd[h] + 0 : "-"; SQ = cr ? sq[h] + 0 : "-"; TD = cr ? td[h] + 0 : "-"
+        ND = (h in dc) ? nd[h] + 0 : "-"; AE = (ha[h] > 0) ? ae[h] + 0 : "-"
+        if (SD > 0) fl[h] = fl[h] ",softnet_drop"; if (TD > 0) fl[h] = fl[h] ",tcp_rcv_drop"
+        if (ND > 0) fl[h] = fl[h] ",nic_discard"; if (AE > 0) fl[h] = fl[h] ",aer"
         if ((h in rc) && rc[h] >= 90) fl[h] = fl[h] ",rcv_cpu>=90"
-        printf "%s %s/%s %s %s %s %s %s %s %s %s %d %d %d %d %d %s %s\n", h, v(numa, h SUBSEP "A"), v(numa, h SUBSEP "B"),
+        printf "%s %s/%s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s\n", h, v(numa, h SUBSEP "A"), v(numa, h SUBSEP "B"),
             v(ring, h SUBSEP "A"), v(ring, h SUBSEP "B"), v(pcie, h SUBSEP "A"), v(pcie, h SUBSEP "B"), v(gov, h), v(irq, h),
-            ((h in rc) ? rc[h] : "-"), ((h in sc) ? sc[h] : "-"), sd[h], sq[h], td[h], nd[h], ae[h], v(kl, h), (fl[h] == "" ? "-" : substr(fl[h], 2))
+            ((h in rc) ? rc[h] : "-"), ((h in sc) ? sc[h] : "-"), SD, SQ, TD, ND, AE, v(kl, h), (fl[h] == "" ? "-" : substr(fl[h], 2))
     }
 }'
 
 host_rx() {  # writes $COLLECT_DIR/host_rx.txt and prints the flagged hosts
-    local k h g i n
+    local k h g i n s
     rx_config > "$WORK/rxcfg"
     for k in "${ELIG[@]}"; do
         h=${T_HOST[$k]}
         g=-; [[ -f $SI/$h/cpu-governor ]] && g=$(awk '$1 ~ /^[0-9]+$/ {printf "%s%s", s, $2; s = "+"} /^n\/a/ {printf "-"}' "$SI/$h/cpu-governor")
         i=$(cat "$SI/$h/irqbalance" 2>&1); [[ $i == running ]] && i=on || { [[ $i == "not running" ]] && i=off || i=-; }
         n=-; [[ -f $SI/$h/kernel-log ]] && n=$(grep -c -i -E "$KLOG_RE" "$SI/$h/kernel-log")
-        echo "$h ${g:--} $i $n"
+        s=ok; [[ -d $SI/$h ]] || s=missing; [[ -n ${SI_CUT[$h]} ]] && s=cut
+        echo "$h ${g:--} $i $n $s"
     done > "$WORK/hostinfo"
     grep "Gbits/sec" "$1" > "$WORK/rx_results"
-    awk "$HOSTRX_AWK" "$WORK/nicmap" "$WORK/ipmap" "$WORK/rxcfg" "$WORK/hostinfo" "$WORK/rx_results" \
-        "$COLLECT_DIR/host_counters.txt" "$COLLECT_DIR/prio_counters.txt" | { read -r hdr; echo "$hdr"; sort -V; } > "$COLLECT_DIR/host_rx.txt"
+    awk '{r[$1]++; a[$1] += $2} END {for (h in r) print h, r[h], a[h]}' "$WORK/hc_reads" > "$WORK/hcreads"
+    [[ -f $WORK/prio_post ]] || : > "$WORK/prio_post"
+    awk -v ns="$HC_READS" "$HOSTRX_AWK" "$WORK/nicmap" "$WORK/ipmap" "$WORK/rxcfg" "$WORK/hostinfo" "$WORK/rx_results" \
+        "$COLLECT_DIR/host_counters.txt" "$COLLECT_DIR/prio_counters.txt" "$WORK/hcreads" "$WORK/prio_post" \
+        | { read -r hdr; echo "$hdr"; sort -V; } > "$COLLECT_DIR/host_rx.txt"
 }
 
 # UDP loss placement, the same rule as the dashboard: per phase and receiving host,
@@ -1161,7 +1189,7 @@ cleanup() {
 
 # Every FS_* setting this tool reads. Any other FS_* in the environment is a typo that would be silently
 # ignored (a dropped letter, say), so it stops the run. A regress test keeps the list complete.
-FS_KNOWN="FS_BUSY_CHECK FS_BUSY_OK FS_CROSS_MAX FS_CROSS_RAIL FS_DURATION FS_EXPECT_HOSTS FS_HOSTS FS_IGNORE_LOCK FS_ITER FS_LABEL FS_LINE_GBPS FS_LOCK_FILE FS_MAX_TARGETS FS_MESH FS_NICS FS_OK_PCT FS_OUT_DIR FS_PORT FS_RAIL_A FS_RAIL_B FS_RAILS FS_RUNLOG FS_SLOW_PCT FS_SPINE_GBPS FS_SPINE_LINKS FS_SPINES FS_SSH_PARALLEL FS_SSH_RETRY_PARALLEL FS_SSH_USER FS_STREAMS FS_SYSFS FS_TOS FS_UDP FS_UDP_DURATION"
+FS_KNOWN="FS_BUSY_CHECK FS_BUSY_OK FS_CROSS_MAX FS_CROSS_RAIL FS_DURATION FS_EXPECT_HOSTS FS_HOSTS FS_IGNORE_LOCK FS_ITER FS_LABEL FS_LINE_GBPS FS_LOCK_FILE FS_MAX_TARGETS FS_MESH FS_NICS FS_OK_PCT FS_OUT_DIR FS_PORT FS_RAIL_A FS_RAIL_B FS_RAILS FS_RUNLOG FS_SLOW_PCT FS_SPINE_GBPS FS_SPINE_LINKS FS_SPINES FS_SSH_PARALLEL FS_SSH_RETRY_PARALLEL FS_SSH_USER FS_STREAMS FS_SYSFS FS_SYSINFO_TIMEOUT FS_TOS FS_UDP FS_UDP_DURATION"
 
 # edit_distance a b: Levenshtein distance, for the "did you mean" hint
 edit_distance() {
@@ -1199,7 +1227,7 @@ main() {
 
     : "${FS_ITER:=5}" "${FS_STREAMS:=16}" "${FS_PORT:=5201}" "${FS_SSH_USER:=root}"
     : "${FS_SSH_PARALLEL:=64}" "${FS_SSH_RETRY_PARALLEL:=8}" "${FS_MAX_TARGETS:=4096}" "${FS_OUT_DIR:=.}"
-    : "${FS_OK_PCT:=75}" "${FS_SLOW_PCT:=50}" "${FS_BUSY_OK:=0}"
+    : "${FS_OK_PCT:=75}" "${FS_SLOW_PCT:=50}" "${FS_BUSY_OK:=0}" "${FS_SYSINFO_TIMEOUT:=300}"
     # Default busy check: any WEKA container in STATE Running (docs.weka.io CLI reference, `weka local ps`)
     : "${FS_BUSY_CHECK:=$WEKA_BUSY_CHECK}"
     [[ $FS_BUSY_CHECK == none ]] && FS_BUSY_CHECK=""
@@ -1213,7 +1241,7 @@ main() {
     ITER_ALL=0; [[ $FS_ITER == all ]] && { ITER_ALL=1; FS_ITER=1; }   # 2 x the pairing rounds, set once the hosts are known
     [[ -z $FS_CROSS_MAX || $FS_CROSS_MAX =~ ^[1-9][0-9]*$ ]] || die "FS_CROSS_MAX must be a positive integer (cross-rail flows at once), got '$FS_CROSS_MAX'"
     local v
-    for v in FS_DURATION FS_UDP_DURATION FS_ITER FS_STREAMS FS_PORT FS_SSH_PARALLEL FS_SSH_RETRY_PARALLEL FS_MAX_TARGETS FS_OK_PCT FS_SLOW_PCT; do
+    for v in FS_DURATION FS_UDP_DURATION FS_SYSINFO_TIMEOUT FS_ITER FS_STREAMS FS_PORT FS_SSH_PARALLEL FS_SSH_RETRY_PARALLEL FS_MAX_TARGETS FS_OK_PCT FS_SLOW_PCT; do
         [[ ${!v} =~ ^[0-9]+$ ]] && (( ${!v} > 0 )) || die "$v must be a positive integer, got '${!v}'"
     done
     (( FS_STREAMS >= 2 )) || die "FS_STREAMS must be >= 2 (iperf3 prints no [SUM] line for one stream)"
@@ -1248,7 +1276,7 @@ main() {
     SSH_OPTS=(-o ControlMaster=auto -o ControlPersist=15m -o "ControlPath=$SOCKET_DIR/%C"
               -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=5
               -o ServerAliveInterval=15 -l "$FS_SSH_USER")
-    declare -gA T_TARGET T_HOST DISC RNIC RIP RMTU RSTATE STARTED REACH_ONLY DOWN_IP
+    declare -gA T_TARGET T_HOST DISC RNIC RIP RMTU RSTATE STARTED REACH_ONLY DOWN_IP SI_CUT
     declare -ga RAIL_MTU=()   # per rail: highest MTU among its usable hosts
     trap cleanup EXIT
     # explicit exits so the EXIT trap always runs on Ctrl-C or kill, whatever command was running
@@ -1538,6 +1566,7 @@ main() {
     (( FS_ITER > 2 * rounds )) && log "Iterations past $(( 2 * rounds )) repeat the pairings from the start"
     [[ -n $FS_TOS ]] && log "Marking: iperf3 -S $FS_TOS = DSCP $(( FS_TOS >> 2 )), ECN bits $(( FS_TOS & 3 )) (TCP: the kernel owns the ECN bits)"
     : > "$COLLECT_DIR/pairs.txt"; : > "$COLLECT_DIR/prio_counters.txt"; : > "$COLLECT_DIR/fec_rates.txt"; : > "$COLLECT_DIR/host_counters.txt"
+    : > "$WORK/hc_reads"; HC_READS=0
     # rail IP -> host/rail, and host_nic -> host, for the summary and UDP loss placement
     for k in "${ELIG[@]}"; do
         [[ ${RIP[$k,0]} != none ]] && echo "${RIP[$k,0]} ${T_HOST[$k]} A"
@@ -1604,9 +1633,9 @@ main() {
             local errs; errs=$(grep -c ',ERROR' "$PHASE_OUT")
             [[ $errs -gt 0 ]] && log "WARNING: $errs runs in phase $PHASE returned no result (lines with ERROR above)"
             collect_counters "$HOSTCTR_SCRIPT" "$WORK/hc.$PHASE"; hostctr_delta "iter${ITER}_p$PHASE" "$hc_prev" "$WORK/hc.$PHASE"; hc_prev=$WORK/hc.$PHASE
-            local hd; hd=$(awk '$3 ~ /^(softnet_dropped|softnet_squeezed|TCPRcvQDrop|TCPBacklogDrop|TCPOFODrop|RcvPruned|OfoPruned|TCPZeroWindowDrop|TCPMemoryPressures|aer_)/' "$WORK/hc_delta" | sort -k4 -rn)
+            local hd; hd=$(awk '$3 ~ /^(softnet_dropped|TCPRcvQDrop|TCPBacklogDrop|TCPOFODrop|RcvPruned|OfoPruned|TCPZeroWindowDrop|TCPMemoryPressures|aer_)/' "$WORK/hc_delta" | sort -k4 -rn)
             if [[ -n $hd ]]; then
-                log "  Host receive drops/squeezes in phase $PHASE ($(echo "$hd" | wc -l | tr -d ' ') counters rose; top 5): $(echo "$hd" | head -n 5 | awk '{printf "%s%s %s +%d", s, $2, $3, $4; s = "; "}')"
+                log "  Host receive drops in phase $PHASE ($(echo "$hd" | wc -l | tr -d ' ') counters rose; top 5): $(echo "$hd" | head -n 5 | awk '{printf "%s%s %s +%d", s, $2, $3, $4; s = "; "}')"
             else log "  No host receive drop counter rose in phase $PHASE ($(wc -l < "$WORK/hc.$PHASE" | tr -d ' ') counters read)"; fi
         done
         [[ $FS_UDP == 1 ]] && udp_phases
@@ -1835,6 +1864,6 @@ if [[ ${#BASH_SOURCE[@]} -eq 0 || ${BASH_SOURCE[0]} == "$0" ]]; then
         echo "# Run ended (rc=$rc) without its cleanup; finishing it now" | tee -a "$FS_RUNLOG" >&2
         ( source "$STATE_FILE"; (exit "$rc"); cleanup )
     fi
-    rm -f "$FS_RUNLOG"
+    rm -f "$FS_RUNLOG" "$STATE_FILE.tmp"
     exit "$rc"
 fi
