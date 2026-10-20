@@ -466,7 +466,7 @@ collect_counters() {  # script outfile: run a counter script on every tested hos
 # unaccounted = lost - (that host's InErrors + backlog drops + rail-NIC drops), floored at 0. The kernel
 # also adds backlog drops to rx_dropped, so NIC = max(0, rx_dropped - backlog) + rx_out_of_buffer.
 # Files: ipmap (ip host rail), nicmap (host_nic host rail), UDP results, host counters, NIC drops.
-# -v t="iterN Ux" limits it to one phase. Prints: lost sent socket nic backlog unaccounted.
+# -v t="iterN Ux" limits it to one phase. Prints: lost sent socket nic backlog unaccounted over (over: buckets beyond the loss).
 UDP_ATTR_AWK='
 FNR == 1 { f++ }
 f == 1 { host[$1] = $2; next }
@@ -480,10 +480,10 @@ f == 4 { k = $1 " " $2 SUBSEP $3; SK[k] += $4; BK[k] += $7; next }
 f == 5 { k = $1 " " $2 SUBSEP nh[$3]; DR[k] += $4; DO[k] += $5 }
 END { for (k in L) { nk = DR[k] - BK[k]; if (nk < 0) nk = 0; nk += DO[k]
                      lost += L[k]; sock += SK[k]; nic += nk; back += BK[k]
-                     u = L[k] - SK[k] - nk - BK[k]; if (u > 0) un += u }
-      printf "%d %d %d %d %d %d\n", lost, sent, sock, nic, back, un }'
+                     u = L[k] - SK[k] - nk - BK[k]; if (u > 0) un += u; else ov -= u }
+      printf "%d %d %d %d %d %d %d\n", lost, sent, sock, nic, back, un, ov }'
 
-udp_attr() {  # [iterN Ux] -> "lost sent socket nic backlog unaccounted"
+udp_attr() {  # [iterN Ux] -> "lost sent socket nic backlog unaccounted over"
     awk -v t="$1" "$UDP_ATTR_AWK" "$WORK/ipmap" "$WORK/nicmap" "$UDP_RESULTS" \
         "$COLLECT_DIR/udp_host_counters.txt" "$COLLECT_DIR/udp_nic_drops.txt"
 }
@@ -515,7 +515,7 @@ udp_phases() {
                 doob = ($5 ~ /^[0-9]+$/ && oob[$1] ~ /^[0-9]+$/) ? $5 - oob[$1] : 0
                 print t, $1, drx, doob }' "$a.nic" "$b.nic" >> "$COLLECT_DIR/udp_nic_drops.txt"
         local r; read -r -a r <<<"$(udp_attr "iter$ITER $PHASE")"
-        log "  $PHASE loss: ${r[0]} of ${r[1]} datagrams lost ($(awk -v l="${r[0]}" -v s="${r[1]}" 'BEGIN {printf "%.3f", s ? 100 * l / s : 0}')%): receiver socket ${r[2]}, NIC ${r[3]}, kernel backlog ${r[4]}, unaccounted ${r[5]}"
+        log "  $PHASE loss: ${r[0]} of ${r[1]} datagrams lost ($(awk -v l="${r[0]}" -v s="${r[1]}" 'BEGIN {printf "%.3f", s ? 100 * l / s : 0}')%): receiver socket ${r[2]}, NIC ${r[3]}, kernel backlog ${r[4]}, unaccounted ${r[5]}$( (( r[6] > 0 )) && echo "; host counters exceed the loss by ${r[6]} (they count all of the phase's traffic, not only these flows)")"
         a=$b
     done
 }
@@ -706,7 +706,10 @@ main() {
     done
     local not_rail; not_rail=$(grep -c 'not on data rails' "$COLLECT_DIR/excluded.txt" 2>&1)
     [[ $not_rail =~ ^[0-9]+$ && $not_rail -gt 0 ]] && log "$not_rail reachable hosts have no address on either rail; left out"
-    (( ${#ELIG[@]} >= 2 )) || die "need at least 2 hosts on the rails, found ${#ELIG[@]} (see $COLLECT_DIR/excluded.txt)"
+    if (( ${#ELIG[@]} < 2 )); then   # the work dir goes with the stop, so show the left-out hosts here
+        [[ -s $COLLECT_DIR/excluded.txt ]] && { log "Left out (first 20):"; head -n 20 "$COLLECT_DIR/excluded.txt" | sed 's/^/#   /' >&2; }
+        die "need at least 2 hosts on the rails, found ${#ELIG[@]}"
+    fi
     (( ${#NO_IPERF[@]} == 0 )) || die "iperf3 missing on ${#NO_IPERF[@]} hosts: ${NO_IPERF[*]}"
     if (( ${#BUSY[@]} > 0 )); then
         if [[ $FS_BUSY_OK != 1 ]]; then
@@ -998,7 +1001,7 @@ main() {
                           for (h in c) printf "%s %.1f %d/%d %.3f\n", h, gs[h] / c[h], l[h], s[h], s[h] ? 100 * l[h] / s[h] : 0 }' \
                     "$map" - | { read -r hdr; echo "$hdr"; sort -k4 -rn; } | column -t | sed 's/^/  /'
                 local r; read -r -a r <<<"$(udp_attr "")"
-                echo "  Lost datagrams ${r[0]} of ${r[1]}: receiver socket ${r[2]}, NIC ${r[3]}, kernel backlog ${r[4]}, unaccounted (likely fabric) ${r[5]}"
+                echo "  Lost datagrams ${r[0]} of ${r[1]}: receiver socket ${r[2]}, NIC ${r[3]}, kernel backlog ${r[4]}, unaccounted (likely fabric) ${r[5]}$( (( r[6] > 0 )) && echo "; host counters exceed the loss by ${r[6]} (they count all of the phase's traffic, not only these flows)")"
             else
                 echo "  No UDP results collected."
             fi
