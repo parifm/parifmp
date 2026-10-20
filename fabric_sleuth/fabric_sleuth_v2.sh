@@ -30,7 +30,9 @@ Required
 Optional (default)
   FS_DURATION      iperf3 seconds per run (120; $1 also sets it)
   FS_ITER          iterations, round-robin pairing: no pair repeats, every host pair
-                   is tested after n-1 iterations (n if n is odd) (5)
+                   is tested after n-1 iterations (n if n is odd); the next n-1 swap client
+                   and server, so every direction on every NIC pair runs after 2(n-1).
+                   all = 2(n-1) (5)
   FS_STREAMS       iperf3 parallel streams, >=2 (16)
   FS_TOS           IP TOS byte for the test traffic, 0-255 (iperf3 -S), e.g. 106 = DSCP 26
                    + ECT(0); TCP keeps the DSCP, the kernel sets the ECN bits (unset: 0)
@@ -48,6 +50,9 @@ Optional (default)
                    leave it out of the coverage count. Default: test it; unrouted A<->B paths count
                    as skipped (PARTIAL), since missing inter-rail routes can be the fault. When every
                    A<->B check fails on routing and no same-rail one does, the log says so.
+  FS_CROSS_MAX=N   at most N cross-rail flows at once: phase 2 (and U2) run in balanced waves,
+                   each flow for the full duration; keeps a shared inter-rail path from capping
+                   every flow (unset: all at once)
   FS_PORT          iperf3 port (5201)
   FS_SSH_USER      ssh user; non-root runs remote steps with sudo -n (root)
   FS_SSH_PARALLEL  ssh sessions at once for sweep and collection (64)
@@ -547,7 +552,8 @@ gateway_check() {
 take_locks() {
     local k busy other
     RUN_ID="$(hostname -s)-$$-$START_TS"
-    local max=$(( 2 * (2 * FS_DURATION + (FS_UDP == 1 ? 2 * FS_UDP_DURATION : 0)) + 300 ))
+    cross_waves $(( ${#ELIG[@]} / 2 ))   # phase 2 waves stretch an iteration
+    local max=$(( 2 * ((1 + XW) * FS_DURATION + (FS_UDP == 1 ? (1 + XW) * FS_UDP_DURATION : 0)) + 300 ))
     local info="since=$(date -u +%Y-%m-%dT%H:%M:%SZ),from=$(hostname -s),user=$(id -un)"   # no spaces: args are re-split remotely
     for k in "${ELIG[@]}"; do
         throttle
@@ -658,7 +664,42 @@ round_pairs() {
 # parity swaps its NIC each iteration; slot 0 (the fixed host) swaps by iteration.
 xpaths() {
     local c=${PC[$1]} s=${PS[$1]} i=${PI[$1]}
-    if (( i ? i % 2 : ITER % 2 )); then X1=($c 0 $s 1); X2=($s 1 $c 0); else X1=($c 1 $s 0); X2=($s 0 $c 1); fi
+    if (( i ? i % 2 : (RND + 1) % 2 )); then X1=($c 0 $s 1); X2=($s 1 $c 0); else X1=($c 1 $s 0); X2=($s 0 $c 1); fi
+}
+
+# cross_waves npairs: XW = phase 2 waves under FS_CROSS_MAX (1 when unset). A pair's two flows (one each
+# way) stay in one wave, so every wave is balanced A->B / B->A; a cap of 1 runs the flows one at a time.
+cross_waves() {
+    local np=$1 cap=${FS_CROSS_MAX:-0}
+    if (( cap == 0 || 2 * np <= cap )); then XW=1
+    elif (( cap == 1 )); then XW=$(( 2 * np ))
+    else XW=$(( (np + cap / 2 - 1) / (cap / 2) )); fi
+}
+
+# xwaves results [udp]: the current pairs' cross-rail runs in XW waves (pair p in wave p % XW). TCP results
+# get a "wave:w/W" marker per wave, so totals only add up flows that ran at the same time.
+xwaves() {
+    local res=$1 mode=$2 w p all=$PHASE_OUT
+    cross_waves ${#PC[@]}
+    (( XW > 1 && ITER == 1 )) && log "  $(( 2 * ${#PC[@]} )) cross-rail flows in $XW waves of at most $FS_CROSS_MAX (FS_CROSS_MAX), $( (( FS_CROSS_MAX == 1 )) && echo "one flow at a time" || echo "each wave A->B and B->A balanced")"
+    for (( w = 0; w < XW; w++ )); do
+        PHASE_OUT=$all.w$w; : > "$PHASE_OUT"
+        [[ $mode == udp ]] || echo "### iteration:${ITER} phase:${PHASE}$( (( XW > 1 )) && echo " wave:$(( w + 1 ))/$XW")" >> "$res"
+        for (( p = 0; p < ${#PC[@]}; p++ )); do
+            xpaths $p
+            if (( ${FS_CROSS_MAX:-0} == 1 && XW > 1 )); then   # cap 1: wave 2p runs X1, 2p+1 runs X2
+                (( p == w / 2 )) || continue
+                if (( w % 2 )); then run_path p2b_$p "${X2[@]}" $mode; else run_path p2a_$p "${X1[@]}" $mode; fi
+            else
+                (( p % XW == w )) || continue
+                run_path p2a_$p "${X1[@]}" $mode; run_path p2b_$p "${X2[@]}" $mode
+            fi
+        done
+        wait
+        [[ $mode == udp ]] || column -t < "$PHASE_OUT" | tee -a "$res"
+        cat "$PHASE_OUT" >> "$all"
+    done
+    PHASE_OUT=$all
 }
 
 # check_path key src_k src_r dst_k dst_r: writes OK or a reason to $PATHS/key
@@ -740,20 +781,21 @@ udp_attr() {  # [iterN Ux] -> "lost sent socket nic backlog unaccounted over"
 cross_summary() {
     local x xm am bm
     x=$(awk -F'[, ]+' 'NR == FNR { rail[$1] = $3; next }
-        /^### / { split($2, a, ":"); it = a[2]; next }
+        /^### / { split($2, a, ":"); it = a[2]; if ($4 ~ /^wave:/) it = it "w" substr($4, 6); next }
         { g = -1; rt = 0
           for (i = 1; i <= NF; i++) { if ($i == "Gbits/sec") g = $(i-1) + 0; if ($i ~ /^retransmits:/) { split($i, q, ":"); rt = q[2] + 0 } }
           if (g >= 0 && ($1 in rail) && ($2 in rail)) print (rail[$1] == rail[$2] ? rail[$1] : rail[$1] ">" rail[$2]), it, g, rt }' "$1" "$2")
     [[ $x == *'>'* ]] || return 0
     med() { sort -n | awk '{v[NR] = $1} END {if (NR) printf "%.1f", NR % 2 ? v[(NR + 1) / 2] : (v[NR / 2] + v[NR / 2 + 1]) / 2}'; }
     xm=$(awk '$1 ~ />/ {print $3}' <<<"$x" | med); am=$(awk '$1 == "A" {print $3}' <<<"$x" | med); bm=$(awk '$1 == "B" {print $3}' <<<"$x" | med)
-    awk -v xm="$xm" -v am="$am" -v bm="$bm" -v la="${LINE_A:-0}" -v lb="${LINE_B:-0}" -v ok="$FS_OK_PCT" '
+    awk -v xm="$xm" -v am="$am" -v bm="$bm" -v la="${LINE_A:-0}" -v lb="${LINE_B:-0}" -v ok="$FS_OK_PCT" -v cm="${FS_CROSS_MAX:-0}" '
         function bw(g) { return g >= 1000 ? sprintf("%.2f Tbps", g / 1000) : sprintf("%.1f Gbps", g) }
         function k(n) { return n >= 1e6 ? sprintf("%.1fM", n / 1e6) : (n >= 1e4 ? sprintf("%.1fk", n / 1e3) : n) }
-        $1 ~ />/ { nx++; d[$1]++; tot[$2] += $3; xr += $4; next }
+        $1 ~ />/ { nx++; d[$1]++; tot[$2] += $3; xr += $4; if (index($2, "w")) wv = 1; next }
         { sr += $4 }
         END { for (i in tot) { ni++; s += tot[i]; if (ni == 1 || tot[i] < lo) lo = tot[i]; if (ni == 1 || tot[i] > hi) hi = tot[i] }
               if (ni == 1) printf "  Cross-rail total: %s over %d flows run at once", bw(s), nx
+              else if (wv) printf "  Cross-rail total per wave (FS_CROSS_MAX=%d flows at once): largest %s, %s on average (%s to %s over %d waves), %d flows", cm, bw(hi), bw(s / ni), bw(lo), bw(hi), ni, nx
               else printf "  Cross-rail total per iteration: %s on average (%s to %s over %d iterations), %d flows", bw(s / ni), bw(lo), bw(hi), ni, nx
               printf " (A->B %d, B->A %d); median %s Gbps per flow; retransmits %s cross-rail vs %s same-rail\n", d["A>B"], d["B>A"], xm, k(xr), k(sr + 0)
               lx = la < lb ? la : lb; ca = la * ok / 100; cb = lb * ok / 100; cx = lx * ok / 100
@@ -773,7 +815,7 @@ FNR == 1 { f++ }
 f == 1 { rail[$1] = $3; nip++; next }
 f == 2 { if ($4 != "unknown" && $4 != "") leaf[$3] = $4; next }
 f == 3 { if ($4 ~ /^[0-9]+Mb\/s$/) { s = $4; sub(/Mb\/s/, "", s); sp[$3] = s / 1000 }; next }
-/^### / { split($2, a, ":"); split($3, b, ":"); it = a[2]; ph = b[2]; next }
+/^### / { split($2, a, ":"); split($3, b, ":"); it = a[2]; ph = b[2]; if ($4 ~ /^wave:/) it = it " wave " substr($4, 6); next }
 { g = -1; for (i = 1; i <= NF; i++) if ($i == "Gbits/sec") { g = $(i-1) + 0; break }
   if (g < 0 || !($1 in rail) || !($2 in rail)) next
   if (!($1 in leaf) || !($2 in leaf)) { left++; next }
@@ -822,12 +864,12 @@ udp_phases() {
         if [[ $u == 2 && $CROSS != on ]]; then log "Phase U2: skipped (cross-rail $CROSS)"; continue; fi
         [[ $u == 1 ]] && log "Phase U1: UDP A->A and B->B at once (-b 0)" || log "Phase U2: UDP cross-rail, A->B and B->A at once (-b 0)"
         echo "### iteration:${ITER} phase:${PHASE}" >> "$UDP_RESULTS"
-        for (( p = 0; p < ${#PC[@]}; p++ )); do
-            ck=${PC[p]}; sk=${PS[p]}
-            if [[ $u == 1 ]]; then run_path p1a_$p $ck 0 $sk 0 udp; run_path p1b_$p $sk 1 $ck 1 udp
-            else xpaths $p; run_path p2a_$p "${X1[@]}" udp; run_path p2b_$p "${X2[@]}" udp; fi
-        done
-        wait
+        if [[ $u == 1 ]]; then
+            for (( p = 0; p < ${#PC[@]}; p++ )); do
+                ck=${PC[p]}; sk=${PS[p]}; run_path p1a_$p $ck 0 $sk 0 udp; run_path p1b_$p $sk 1 $ck 1 udp
+            done
+            wait
+        else xwaves "$UDP_RESULTS" udp; fi
         column -t < "$PHASE_OUT" | tee -a "$UDP_RESULTS"
         local b=$WORK/udp.$u
         collect_counters "$UDPHOST_SCRIPT" "$b.host"; collect_drops "$b.nic"
@@ -931,6 +973,8 @@ main() {
     [[ $FS_MESH == 0 || $FS_MESH == 1 ]] || die "FS_MESH must be 0 or 1, got '$FS_MESH'"
     [[ -z $FS_CROSS_RAIL || $FS_CROSS_RAIL == 0 || $FS_CROSS_RAIL == 1 ]] || die "FS_CROSS_RAIL must be 0 or 1, got '$FS_CROSS_RAIL'"
     [[ -z $FS_CROSS_RAIL ]] && FS_CROSS_RAIL=1
+    ITER_ALL=0; [[ $FS_ITER == all ]] && { ITER_ALL=1; FS_ITER=1; }   # 2 x the pairing rounds, set once the hosts are known
+    [[ -z $FS_CROSS_MAX || $FS_CROSS_MAX =~ ^[1-9][0-9]*$ ]] || die "FS_CROSS_MAX must be a positive integer (cross-rail flows at once), got '$FS_CROSS_MAX'"
     local v
     for v in FS_DURATION FS_UDP_DURATION FS_ITER FS_STREAMS FS_PORT FS_SSH_PARALLEL FS_SSH_RETRY_PARALLEL FS_MAX_TARGETS FS_OK_PCT FS_SLOW_PCT; do
         [[ ${!v} =~ ^[0-9]+$ ]] && (( ${!v} > 0 )) || die "$v must be a positive integer, got '${!v}'"
@@ -973,7 +1017,7 @@ main() {
     trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP
     trap '' PIPE   # a dead log tee must not abort the run: log writes just fail, results go to files
     parse_rails
-    log "Begin $(date) | ${#TARGETS[@]} targets | rails: $RAIL_MODE A=${RAIL_SPEC[0]// /,} B=${RAIL_SPEC[1]// /,} | ${FS_DURATION}s x $FS_ITER iterations"
+    log "Begin $(date) | ${#TARGETS[@]} targets | rails: $RAIL_MODE A=${RAIL_SPEC[0]// /,} B=${RAIL_SPEC[1]// /,} | ${FS_DURATION}s x $( (( ITER_ALL )) && echo "all (2 x pairing rounds)" || echo $FS_ITER) iterations$([[ -n $FS_CROSS_MAX ]] && echo " | cross-rail at most $FS_CROSS_MAX flows at once")"
     log "Temp: $WORK $SOCKET_DIR $COLLECT_DIR $FS_RUNLOG (all removed at the end; the collect dir is kept if a run is cut short)"
 
     # --- 1. reachability sweep (capped) ---
@@ -1237,11 +1281,17 @@ main() {
     local n=${#ORDER[@]} p ck sk
     ROT=("${ORDER[@]}"); (( n % 2 )) && ROT+=(-)
     local rounds=$(( ${#ROT[@]} - 1 )) per=$(( n / 2 )) total=$(( n * (n - 1) / 2 ))
+    (( ITER_ALL )) && FS_ITER=$(( 2 * rounds ))
     local used=$(( FS_ITER < rounds ? FS_ITER : rounds ))
     PAIRS_COVERED=$(( used * per )); PAIRS_TOTAL=$total
     PATHS_PLANNED=0; DROP_READS_MIN=-1
     log "Pairing: round-robin, $per pairs per iteration; $FS_ITER iterations cover $PAIRS_COVERED of $total host pairs$( (( FS_ITER < rounds )) && echo " (all pairs need FS_ITER=$rounds)")"
-    (( FS_ITER > rounds )) && log "Iterations past $rounds repeat the pairings from the start"
+    # a pair's 8 directed NIC paths: cycle 1 runs 4, cycle 2 (same pairings, client and server swapped) the other 4
+    local -A DIRECTED=(); local dper=$(( FS_CROSS_RAIL == 0 ? 2 : 4 ))
+    DIRECTED_TOTAL=$(( n * (n - 1) * dper ))
+    log "Directed NIC paths: $(( (FS_ITER < 2 * rounds ? FS_ITER : 2 * rounds) * per * dper )) of $DIRECTED_TOTAL planned$( (( FS_ITER < 2 * rounds )) && echo " (every direction on every NIC pair needs FS_ITER=$(( 2 * rounds )), or FS_ITER=all)")"
+    (( FS_ITER > rounds && FS_ITER <= 2 * rounds )) && log "Iterations $(( rounds + 1 ))-$FS_ITER repeat the pairings with client and server swapped"
+    (( FS_ITER > 2 * rounds )) && log "Iterations past $(( 2 * rounds )) repeat the pairings from the start"
     [[ -n $FS_TOS ]] && log "Marking: iperf3 -S $FS_TOS = DSCP $(( FS_TOS >> 2 )), ECN bits $(( FS_TOS & 3 )) (TCP: the kernel owns the ECN bits)"
     : > "$COLLECT_DIR/pairs.txt"; : > "$COLLECT_DIR/prio_counters.txt"; : > "$COLLECT_DIR/fec_rates.txt"
     # rail IP -> host/rail, and host_nic -> host, for the summary and UDP loss placement
@@ -1261,7 +1311,8 @@ main() {
     CROSS=on; CROSS_UNROUTED=0; [[ $FS_CROSS_RAIL == 0 ]] && { CROSS=off; log "Cross-rail phase off (FS_CROSS_RAIL=0): A<->B is not tested"; }
     local cross_decided=; [[ $CROSS == on ]] || cross_decided=1
     for (( ITER = 1; ITER <= FS_ITER; ITER++ )); do
-        round_pairs $(( (ITER - 1) % rounds ))
+        RND=$(( (ITER - 1) % rounds )); round_pairs $RND
+        if (( (ITER - 1) / rounds % 2 )); then local -a tmp=("${PC[@]}"); PC=("${PS[@]}"); PS=("${tmp[@]}"); fi
         lock_all touch
         local per=4; [[ $CROSS == on ]] || per=2
         PATHS_PLANNED=$(( PATHS_PLANNED + per * ${#PC[@]} ))
@@ -1273,6 +1324,8 @@ main() {
             ck=${PC[p]}; sk=${PS[p]}
             check_path p1a_$p $ck 0 $sk 0; check_path p1b_$p $sk 1 $ck 1
             [[ $CROSS == on ]] && { xpaths $p; check_path p2a_$p "${X1[@]}"; check_path p2b_$p "${X2[@]}"; }
+            DIRECTED["$ck 0 $sk 0"]=1; DIRECTED["$sk 1 $ck 1"]=1
+            [[ $CROSS == on ]] && { DIRECTED["${X1[*]}"]=1; DIRECTED["${X2[*]}"]=1; }
         done
         wait
         if [[ -z $cross_decided && ${#PC[@]} -gt 0 ]]; then
@@ -1295,14 +1348,14 @@ main() {
             PHASE_OUT=$WORK/phase.$ITER.$PHASE; : > "$PHASE_OUT"
             if [[ $PHASE == 2 && $CROSS != on ]]; then log "Phase 2: skipped (cross-rail $CROSS)"; continue; fi
             [[ $PHASE == 1 ]] && log "Phase 1: A->A and B->B at once" || log "Phase 2: cross-rail, A->B and B->A at once"
-            echo "### iteration:${ITER} phase:${PHASE}" >> "$RESULTS"
-            for (( p = 0; p < ${#PC[@]}; p++ )); do
-                ck=${PC[p]}; sk=${PS[p]}
-                if [[ $PHASE == 1 ]]; then run_path p1a_$p $ck 0 $sk 0; run_path p1b_$p $sk 1 $ck 1
-                else xpaths $p; run_path p2a_$p "${X1[@]}"; run_path p2b_$p "${X2[@]}"; fi
-            done
-            wait
-            column -t < "$PHASE_OUT" | tee -a "$RESULTS"
+            if [[ $PHASE == 1 ]]; then
+                echo "### iteration:${ITER} phase:${PHASE}" >> "$RESULTS"
+                for (( p = 0; p < ${#PC[@]}; p++ )); do
+                    ck=${PC[p]}; sk=${PS[p]}; run_path p1a_$p $ck 0 $sk 0; run_path p1b_$p $sk 1 $ck 1
+                done
+                wait
+                column -t < "$PHASE_OUT" | tee -a "$RESULTS"
+            else xwaves "$RESULTS"; fi
             local errs; errs=$(grep -c ',ERROR' "$PHASE_OUT")
             [[ $errs -gt 0 ]] && log "WARNING: $errs runs in phase $PHASE returned no result (lines with ERROR above)"
         done
@@ -1400,6 +1453,7 @@ main() {
         echo ""
         echo "  Hosts on the rails: ${#ELIG[@]}, with a result: $(grep 'Gbits/sec' "$RESULTS" | awk -F'[, ]+' 'NR==FNR {h[$1]=$2; next} {print h[$1]; print h[$2]}' "$WORK/ipmap" - | sort -u | grep -c .) | Rails unusable: $(awk 'NR > 1 {n += ($6 != "ok") + ($10 != "ok")} END {print n + 0}' "$COLLECT_DIR/rails.txt") (rails.txt) | TCP paths skipped: $(awk '$2 ~ /^[12]$/' "$PATH_EXCL" | wc -l | tr -d ' ') (paths_excluded.txt)"
         echo "  Runs with no result: $(grep -c ',ERROR' "$RESULTS")"
+        echo "  Directed NIC paths planned: ${#DIRECTED[@]} of $DIRECTED_TOTAL$( (( ${#DIRECTED[@]} < DIRECTED_TOTAL )) && echo " (all of them: FS_ITER=all)")"
         if [[ $FS_UDP == 1 ]]; then
             echo ""
             if grep -q 'Gbits/sec' "$UDP_RESULTS"; then
@@ -1471,6 +1525,9 @@ main() {
         echo "hosts_expected=$expect"
         echo "hosts_tested=$hosts_tested"
         echo "paths_planned=$PATHS_PLANNED"
+        echo "directed_paths=${#DIRECTED[@]}"
+        echo "directed_paths_total=$DIRECTED_TOTAL"
+        echo "cross_max=${FS_CROSS_MAX:-none}"
         echo "cross_rail=$( (( CROSS_UNROUTED )) && echo unrouted || echo "$CROSS")"
         echo "paths_ok=$paths_ok"
         echo "drop_nics_read_min=$DROP_READS_MIN"

@@ -1464,13 +1464,16 @@ def _cross_finding(data):
         return f'{n / 1e6:.1f}M' if n >= 1e6 else f'{n / 1e3:.1f}k' if n >= 1e4 else str(n)
     tot = defaultdict(float)
     for r in xs:
-        tot[r['iteration']] += r['gbps']
+        tot[r['iteration'], r.get('wave', '')] += r['gbps']
     t = list(tot.values())
     ab = sum(1 for r in xs if ipr[r['src']] == 'A')
     xr = sum(r.get('retransmits', 0) for r in xs)
     sr = sum(r.get('retransmits', 0) for r in res if not _cross(r, ipr))
     xm = med([r['gbps'] for r in xs])
+    waves = any(r.get('wave') for r in xs)
     agg = (f'Cross-rail total: {bw(t[0])} over {len(xs)} flows run at once' if len(t) == 1 else
+           f'Cross-rail total per wave ({data.get("metadata", {}).get("cross_max", "?")} flows at once): largest {bw(max(t))}, '
+           f'{bw(sum(t) / len(t))} on average ({bw(min(t))} to {bw(max(t))} over {len(t)} waves), {len(xs)} flows' if waves else
            f'Cross-rail total per iteration: {bw(sum(t) / len(t))} on average ({bw(min(t))} to {bw(max(t))} '
            f'over {len(t)} iterations), {len(xs)} flows')
     agg += f' (A->B {ab}, B->A {len(xs) - ab}); median {xm:.1f} Gbps per flow; retransmits {k(xr)} cross-rail vs {k(sr)} same-rail'
@@ -1520,6 +1523,8 @@ def _uplinks(data):
             left += 1
             continue
         x, y, ph, it = leaf[a], leaf[b], str(r['phase']), r['iteration']
+        if r.get('wave'):
+            it = f"{it} wave {r['wave']}"
         if x == y:
             if ipr[a] == ipr[b]:
                 same[x].append(r['gbps'])
@@ -1738,12 +1743,12 @@ def parse_tar_archive(filepath):
     line_speed = f'{line_gbps * 1000}Mb/s'
 
     # iperf3 results — with iteration/phase markers
-    cur_iter, cur_phase = 0, 0
+    cur_iter, cur_phase, cur_wave = 0, 0, ''
     for line in read_file('iperf3_results.txt').splitlines():
-        # Marker lines: ### iteration:N phase:N
-        mm = re.match(r'^###\s+iteration:(\d+)\s+phase:(\d+)', line)
+        # Marker lines: ### iteration:N phase:N [wave:w/W]
+        mm = re.match(r'^###\s+iteration:(\d+)\s+phase:(\d+)(?:\s+wave:(\S+))?', line)
         if mm:
-            cur_iter, cur_phase = int(mm.group(1)), int(mm.group(2))
+            cur_iter, cur_phase, cur_wave = int(mm.group(1)), int(mm.group(2)), mm.group(3) or ''
             continue
         m = re.match(r'^(\S+),(\S+),\[SUM\]\s+\S+\s+sec\s+([\d.]+)\s+([KMGTP]?)Bytes\s+([\d.]+)\s+Gbits/sec\s+receiver\s*(?:retransmits:(\d+))?', line)
         if m:
@@ -1752,7 +1757,7 @@ def parse_tar_archive(filepath):
             unit_scale = {'': 1e-9, 'K': 1e-6, 'M': 1e-3, 'G': 1, 'T': 1024, 'P': 1048576}
             gbytes = int(round(bval * unit_scale.get(bunit, 1)))
             data['iperf_results'].append({
-                'iteration': cur_iter, 'phase': cur_phase,
+                'iteration': cur_iter, 'phase': cur_phase, 'wave': cur_wave,
                 'src': m.group(1), 'dst': m.group(2),
                 'gbytes': gbytes, 'gbps': round(float(m.group(5)), 1),
                 'retransmits': int(m.group(6)) if m.group(6) else 0,
