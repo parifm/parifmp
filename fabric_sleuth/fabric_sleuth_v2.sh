@@ -991,7 +991,8 @@ main() {
     (( ${#NO_IPERF[@]} == 0 )) || die "iperf3 missing on ${#NO_IPERF[@]} hosts: ${NO_IPERF[*]}"
     if (( ${#BUSY[@]} > 0 )); then
         if [[ $FS_BUSY_OK != 1 ]]; then
-            die "FS_BUSY_CHECK: ${#BUSY[@]} hosts in use or check failed: ${BUSY[*]:0:10}. Line-rate load can starve cluster heartbeats and get nodes evicted. Stop the cluster's I/O and set FS_BUSY_OK=1 to proceed."
+            local nb=${#BUSY[@]}; mapfile -t BUSY < <(printf "%s\n" "${BUSY[@]}" | sort -V)
+            die "FS_BUSY_CHECK: $nb hosts in use or check failed$( (( nb > 10 )) && echo " (first 10 of $nb)"): ${BUSY[*]:0:10}. Line-rate load can starve cluster heartbeats and get nodes evicted. Stop the cluster's I/O and set FS_BUSY_OK=1 to proceed."
         fi
         log "WARNING: ${#BUSY[@]} hosts in use per FS_BUSY_CHECK; FS_BUSY_OK=1 given"
         for k in "${ELIG[@]}"; do
