@@ -562,6 +562,7 @@ take_locks() {
     done
     wait
     LOCKED=1   # release whatever we took, even if we stop below
+    save_state
     busy=$(cat "$WORK"/lock.* | grep ' BUSY ')
     other=$(cat "$WORK"/lock.* | grep -v -E ' (OK|BUSY .*)$')
     [[ -n $other ]] && { log "WARNING: could not take the run lock on:"; echo "$other" | sed 's/^/#   /' >&2; }
@@ -937,6 +938,14 @@ stop_servers() {
     STARTED=()
 }
 
+# cleanup's inputs, so the wrapper can finish cleanup when main dies without it: SIGKILL, OOM, or (seen 1 in ~76
+# Ctrl-C runs under load) bash running the INT trap's exit but never the EXIT trap. Written whole, then renamed.
+save_state() {
+    [[ -n $STATE_FILE ]] || return 0
+    declare -p WORK SOCKET_DIR COLLECT_DIR LOADED DONE LOCKED RUN_ID STARTED T_TARGET REACH_ONLY ELIG SSH_OPTS SUDO \
+        FS_SSH_USER 2>&1 | grep '^declare ' > "$STATE_FILE.tmp" && mv -f "$STATE_FILE.tmp" "$STATE_FILE"
+}
+
 cleanup() {
     local rc=$? k   # first: bash 5.1 would otherwise end a piped main with cleanup's last status
     trap '' INT TERM HUP PIPE   # nothing may cut cleanup short: a second signal, or a dead tee (EPIPE, not death)
@@ -951,6 +960,7 @@ cleanup() {
         else rm -rf "${COLLECT_DIR:?}"; fi
     fi
     rm -rf "${SOCKET_DIR:?}" "${WORK:?}"
+    [[ -z $STATE_FILE ]] || rm -f "$STATE_FILE"   # last: the wrapper reruns a cleanup cut short
     exit $rc
 }
 
@@ -1050,7 +1060,8 @@ main() {
     trap '' PIPE   # a dead log tee must not abort the run: log writes just fail, results go to files
     parse_rails
     log "Begin $(date) | ${#TARGETS[@]} targets | rails: $RAIL_MODE A=${RAIL_SPEC[0]// /,} B=${RAIL_SPEC[1]// /,} | ${FS_DURATION}s x $( (( ITER_ALL )) && echo "all (2 x pairing rounds)" || echo $FS_ITER) iterations$([[ -n $FS_CROSS_MAX ]] && echo " | cross-rail at most $FS_CROSS_MAX flows at once")"
-    log "Temp: $WORK $SOCKET_DIR $COLLECT_DIR $FS_RUNLOG (all removed at the end; the collect dir is kept if a run is cut short)"
+    log "Temp: $WORK $SOCKET_DIR $COLLECT_DIR $FS_RUNLOG $STATE_FILE (all removed at the end; the collect dir is kept if a run is cut short)"
+    save_state
 
     # --- 1. reachability sweep (capped) ---
     local i t
@@ -1276,10 +1287,10 @@ main() {
     # --- 5. iperf3 servers ---
     LOADED=1
     log "Stopping stray iperf3 and starting servers on port $FS_PORT..."
+    for k in "${ELIG[@]}"; do STARTED[$k]=1; done; save_state
     for k in "${ELIG[@]}"; do
         local ips=()
         for r in 0 1; do rail_ok $k $r && ips+=("${RIP[$k,$r]}"); done
-        STARTED[$k]=1
         rbash "${T_TARGET[$k]}" "$FS_PORT" "${ips[@]}" <<<"$SERVER_SCRIPT" >> "$RUNLOG_SSH" 2>&1 &
     done
     wait
@@ -1576,7 +1587,7 @@ main() {
 
     local tarball=$FS_OUT_DIR/fabric_sleuth_${LABEL}_${ts}.tgz
     stop_servers
-    DONE=1
+    DONE=1; save_state
     [[ -n $FS_RUNLOG && -f $FS_RUNLOG ]] && cp "$FS_RUNLOG" "$COLLECT_DIR/run.log"
     COPYFILE_DISABLE=1 tar czf "$tarball" -C "$(dirname "$COLLECT_DIR")" "$(basename "$COLLECT_DIR")" || die "tar failed; data left in $COLLECT_DIR"
     log "Data archive: $tarball ($(du -h "$tarball" | cut -f1))"
@@ -1601,8 +1612,13 @@ START_TS=$(date -u +%Y%m%dT%H%M%SZ)
 # tee ignores INT/TERM/HUP (Ctrl-C, group kill, dropped session) so cleanup can still write.
 if [[ ${#BASH_SOURCE[@]} -eq 0 || ${BASH_SOURCE[0]} == "$0" ]]; then
     FS_RUNLOG=$(mktemp "${TMPDIR:-/tmp}/fs_runlog.XXXXXX") || exit 2
+    STATE_FILE=$FS_RUNLOG.state
     trap ':' INT TERM HUP   # keep waiting for main's cleanup on Ctrl-C or a group kill (a no-op trap, so main gets its own)
     { main "$@" 2>&1 1>&3 3>&- | ( trap '' INT TERM HUP; exec tee -a "$FS_RUNLOG" >&2 3>&- ); rc=${PIPESTATUS[0]}; } 3>&1
+    if [[ -s $STATE_FILE ]]; then   # main ended without finishing its cleanup: do it here, with main's state and exit code
+        echo "# Run ended (rc=$rc) without its cleanup; finishing it now" | tee -a "$FS_RUNLOG" >&2
+        ( source "$STATE_FILE"; (exit "$rc"); cleanup )
+    fi
     rm -f "$FS_RUNLOG"
     exit "$rc"
 fi
