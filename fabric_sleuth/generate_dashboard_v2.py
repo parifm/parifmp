@@ -1749,8 +1749,9 @@ def _host_rx_html(rx):
     body = ''.join('<tr>' + ''.join(f'<td>{escape(c)}</td>' for c in r[:-1])
                    + (f'<td class="text-danger">{escape(r[-1].replace(",", ", "))}</td>' if r[-1] != '-' else '<td>-</td>') + '</tr>'
                    for r in rows)
-    note = ('Ring: rx ring current/max. PCIe: GT/s x width, current/max. CPU: iperf3 process %, max over runs (can pass 100 with '
-            'iperf3 3.16+ threads). Drops, discards, AER: increases during the TCP phases. Klog: kernel log lines naming AER, PCIe, '
+    note = ('Ring: rx ring current/max. PCIe: GT/s x width, current/max. RcvCPU: receiving iperf3 process %, max over runs; it sums '
+            'threads, and iperf3 3.16+ runs one per stream, so RcvThr = RcvCPU / streams there (= RcvCPU on older iperf3) and '
+            'the flag is RcvThr &gt;= 90. Drops, discards, AER: increases during the TCP phases. Klog: kernel log lines naming AER, PCIe, '
             'link down, timeouts, hung tasks or OOM (a lead, not a verdict). Raw per-host system info: sysinfo/&lt;host&gt;/ in the bundle.')
     return (f'<div class="card mb-3"><div class="card-header">Host-side receive: {nfl} of {len(rows)} hosts flagged</div>'
             f'<div class="card-body" style="max-height:420px; overflow-y:auto;">'

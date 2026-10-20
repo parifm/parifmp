@@ -922,7 +922,7 @@ f == 3 { hosts[$1] = 1; numa[$1, $2] = $3; ring[$1, $2] = $4; pcie[$1, $2] = $5
          if (split($4, x, "/") == 2 && x[1] + 0 < x[2] + 0) fl[$1] = fl[$1] ",ring" $2 "<max"
          if (split($5, y, "/") == 2) { split(y[1], c, "x"); split(y[2], m, "x"); if (c[1] + 0 < m[1] + 0 || c[2] + 0 < m[2] + 0) fl[$1] = fl[$1] ",pcie" $2 "<max" }
          next }
-f == 4 { gov[$1] = $2; irq[$1] = $3; kl[$1] = $4; hosts[$1] = 1
+f == 4 { gov[$1] = $2; irq[$1] = $3; kl[$1] = $4; th[$1] = $6; hosts[$1] = 1
          if ($5 == "missing") fl[$1] = fl[$1] ",sysinfo_missing"; else if ($5 == "cut") fl[$1] = fl[$1] ",sysinfo_partial"
          if ($2 != "-" && $2 != "performance") fl[$1] = fl[$1] ",gov:" $2; if ($4 > 0) fl[$1] = fl[$1] ",klog"; next }
 f == 5 { split($1, ip, ","); for (i = 1; i <= NF; i++) if ($i ~ /^cpu:/) { split(substr($i, 5), u, "/")
@@ -939,7 +939,7 @@ f == 8 { hr[$1] = $2; ha[$1] = $3; next }
 f == 9 { if ($2 !~ /^rdma:/ && tolower($2) ~ /discard|out_of_buffer/) dc[nh[$1]] = 1 }
 function v(a, k) { return (k in a) ? a[k] : "-" }
 END {
-    print "Host NUMA_A/B Ring_A Ring_B PCIe_A PCIe_B Governor IRQbal RcvCPU% SndCPU% Softnet_drop Squeeze TCP_rcv_drop NIC_discard AER Klog Flags"
+    print "Host NUMA_A/B Ring_A Ring_B PCIe_A PCIe_B Governor IRQbal RcvCPU% RcvThr% SndCPU% Softnet_drop Squeeze TCP_rcv_drop NIC_discard AER Klog Flags"
     for (h in hosts) {
         # "-" = not read (ssh failed, no AER in sysfs, no discard counter on this driver): unknown, not zero
         cr = (h in hr) ? hr[h] : 0
@@ -948,15 +948,18 @@ END {
         ND = (h in dc) ? nd[h] + 0 : "-"; AE = (ha[h] > 0) ? ae[h] + 0 : "-"
         if (SD > 0) fl[h] = fl[h] ",softnet_drop"; if (TD > 0) fl[h] = fl[h] ",tcp_rcv_drop"
         if (ND > 0) fl[h] = fl[h] ",nic_discard"; if (AE > 0) fl[h] = fl[h] ",aer"
-        if ((h in rc) && rc[h] >= 90) fl[h] = fl[h] ",rcv_cpu>=90"
-        printf "%s %s/%s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s\n", h, v(numa, h SUBSEP "A"), v(numa, h SUBSEP "B"),
+        # iperf3 3.16+ runs a thread per stream and sums their CPU, so judge per thread: raw / threads (th: FS_STREAMS
+        # on 3.16+, else 1; an unknown version counts as 1, which can only flag more)
+        RT = (h in rc) ? sprintf("%.1f", rc[h] / ((th[h] + 0 > 0) ? th[h] : 1)) : "-"
+        if (RT != "-" && RT + 0 >= 90) fl[h] = fl[h] ",rcv_cpu>=90/thread"
+        printf "%s %s/%s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s\n", h, v(numa, h SUBSEP "A"), v(numa, h SUBSEP "B"),
             v(ring, h SUBSEP "A"), v(ring, h SUBSEP "B"), v(pcie, h SUBSEP "A"), v(pcie, h SUBSEP "B"), v(gov, h), v(irq, h),
-            ((h in rc) ? rc[h] : "-"), ((h in sc) ? sc[h] : "-"), SD, SQ, TD, ND, AE, v(kl, h), (fl[h] == "" ? "-" : substr(fl[h], 2))
+            ((h in rc) ? rc[h] : "-"), RT, ((h in sc) ? sc[h] : "-"), SD, SQ, TD, ND, AE, v(kl, h), (fl[h] == "" ? "-" : substr(fl[h], 2))
     }
 }'
 
 host_rx() {  # writes $COLLECT_DIR/host_rx.txt and prints the flagged hosts
-    local k h g i n s
+    local k h g i n s t
     rx_config > "$WORK/rxcfg"
     for k in "${ELIG[@]}"; do
         h=${T_HOST[$k]}
@@ -964,7 +967,9 @@ host_rx() {  # writes $COLLECT_DIR/host_rx.txt and prints the flagged hosts
         i=$(cat "$SI/$h/irqbalance" 2>&1); [[ $i == running ]] && i=on || { [[ $i == "not running" ]] && i=off || i=-; }
         n=-; [[ -f $SI/$h/kernel-log ]] && n=$(grep -c -i -E "$KLOG_RE" "$SI/$h/kernel-log")
         s=ok; [[ -d $SI/$h ]] || s=missing; [[ -n ${SI_CUT[$h]} ]] && s=cut
-        echo "$h ${g:--} $i $n $s"
+        # iperf3 threads per receiving process: one per stream from 3.16 (its own --version, from sysinfo)
+        t=1; [[ -f $SI/$h/iperf3 ]] && (( $(awk 'match($0, /iperf 3\.[0-9]+/) {print substr($0, RSTART + 8, RLENGTH - 8) + 0; exit}' "$SI/$h/iperf3") + 0 >= 16 )) && t=$FS_STREAMS
+        echo "$h ${g:--} $i $n $s $t"
     done > "$WORK/hostinfo"
     grep "Gbits/sec" "$1" > "$WORK/rx_results"
     awk '{r[$1]++; a[$1] += $2} END {for (h in r) print h, r[h], a[h]}' "$WORK/hc_reads" > "$WORK/hcreads"
@@ -1735,7 +1740,7 @@ main() {
         echo ""
         # receive side: flagged hosts only; every host's row is in host_rx.txt and on the dashboard
         local nrx nfl; nrx=$(( $(wc -l < "$COLLECT_DIR/host_rx.txt") - 1 )); nfl=$(awk 'NR > 1 && $NF != "-"' "$COLLECT_DIR/host_rx.txt" | wc -l | tr -d ' ')
-        echo "Host-side receive: $nfl of $nrx hosts flagged (host_rx.txt; PCIe as GT/s x width, current/max; CPU % per iperf3 process, max over runs):"
+        echo "Host-side receive: $nfl of $nrx hosts flagged (host_rx.txt; PCIe as GT/s x width, current/max; CPU: iperf3 process %, max over runs, and per thread (iperf3 3.16+: one thread per stream), flagged at 90):"
         (( nfl > 0 )) && awk 'NR == 1 || $NF != "-"' "$COLLECT_DIR/host_rx.txt" | column -t | sed 's/^/  /'
         echo ""
         echo "  Hosts on the rails: ${#ELIG[@]}, with a result: $(grep 'Gbits/sec' "$RESULTS" | awk -F'[, ]+' 'NR==FNR {h[$1]=$2; next} {print h[$1]; print h[$2]}' "$WORK/ipmap" - | sort -u | grep -c .) | Rails unusable: $(awk 'NR > 1 {n += ($6 != "ok") + ($10 != "ok")} END {print n + 0}' "$COLLECT_DIR/rails.txt") (rails.txt) | TCP paths skipped: $(awk '$2 ~ /^[12]$/' "$PATH_EXCL" | wc -l | tr -d ' ') (paths_excluded.txt)"
