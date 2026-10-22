@@ -395,7 +395,7 @@ lost {lost:,} of {sent:,} datagrams ({100 * lost / sent if sent else 0:.3f}%): r
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
 <link href="https://cdn.datatables.net/1.13.4/css/dataTables.bootstrap5.min.css" rel="stylesheet">
 <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
-<script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+<script src="https://unpkg.com/vis-network@10.1.2/standalone/umd/vis-network.min.js"></script>
 <style>
 body {{ background: #1a1a2e; color: #e0e0e0; font-family: 'Segoe UI', system-ui, sans-serif; }}
 .card {{ background: #16213e; border: 1px solid #0f3460; margin-bottom: 6px; }}
