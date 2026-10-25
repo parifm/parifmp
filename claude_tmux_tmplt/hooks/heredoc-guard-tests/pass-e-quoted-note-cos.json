@@ -1,0 +1,1 @@
+{"session_id":"fixture","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"printf '%s\\n' 'note: rm -rf \"$VAR\" is unguarded' >> cos_state.md"}}

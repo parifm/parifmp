@@ -1,0 +1,1 @@
+{"session_id":"fixture","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"cd ~/proj && python3 - <<'PY'\np = \"out.txt\"\nwith open(p, \"w\") as f:\n    f.write(\"x\")\nPY","description":"rule c: python3 - heredoc writes a file"}}

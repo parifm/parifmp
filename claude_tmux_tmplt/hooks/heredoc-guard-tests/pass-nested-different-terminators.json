@@ -1,0 +1,1 @@
+{"session_id":"fixture","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"bash <<'OUTER'\necho outer\ncat <<INNER\ninner\nINNER\necho back\nOUTER\necho done","description":"pass: nested heredocs with different terminators"}}

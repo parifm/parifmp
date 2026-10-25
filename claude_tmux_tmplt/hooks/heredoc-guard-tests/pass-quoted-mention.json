@@ -1,0 +1,1 @@
+{"session_id":"fixture","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"echo \"<<EOF\"\necho 'cat <<EOF is a heredoc'\ncat <<EOF\nx\nEOF","description":"pass: quoted mentions of <<EOF are not openers (if they were, the real cat <<EOF would read as nested)"}}

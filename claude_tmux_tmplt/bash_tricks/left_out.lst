@@ -1,0 +1,192 @@
+reason_type	reason	score	ex	cx	url	page	site
+below_cutoff	qualified but scored below rank 250	10	5	1.0	https://expertbeacon.com/functional-and-flexible-shell-scripting-tricks/	Functional And Flexible Shell Scripting Tricks - ExpertBeacon	expertbeacon.com
+below_cutoff	qualified but scored below rank 250	10	5	1.0	https://www.kubuntuforums.net/forum/general/community-cafe/55070-bash-tricks-and-tips-requests	 Bash Tricks and Tips requests - Kubuntu Forums 	kubuntuforums.net
+below_cutoff	qualified but scored below rank 250	10	8	0.2	http://www.sitepoint.com/the-self-pipe-trick-explained/	The Self-Pipe Trick Explained — SitePoint	sitepoint.com
+below_cutoff	qualified but scored below rank 250	10	7	0.4	https://www.thanassis.space/bashheimer.html	What am I running inside my bash?	thanassis.space
+below_cutoff	qualified but scored below rank 250	9	7	0.3	https://www.garron.me/en/go2linux/du-linux-command-line-disk-usage.html	du — Linux command line to display disk usage per file and directory — garron.me — E	garron.me
+below_cutoff	qualified but scored below rank 250	9	8	0.1	https://lacker.io/math/2022/02/24/godels-incompleteness-in-bash.html	Gödel's Incompleteness Theorem, in Bash	lacker.io
+below_cutoff	qualified but scored below rank 250	9	9	0.0	https://leanpub.com/read/learnbashthehardway/_learn_bash_the_hard_way	Learn Bash the Hard Way — Learn Bash the Hard Way	leanpub.com
+below_cutoff	qualified but scored below rank 250	9	5	0.8	http://lpan.io/one-liner-dropbox-client/	My one-liner Linux Dropbox client	lpan.io
+below_cutoff	qualified but scored below rank 250	9	6	0.5	https://nixos.wiki/wiki/Nix-shell_shebang	Nix-shell shebang - NixOS Wiki	nixos.wiki
+below_cutoff	qualified but scored below rank 250	9	6	0.5	https://twobithistory.org/2019/08/22/readline.html	Things You Didn't Know About GNU Readline	twobithistory.org
+below_cutoff	qualified but scored below rank 250	9	7	0.3	https://wizardzines.com/comics/bash-quotes	bash quotes	wizardzines.com
+below_cutoff	qualified but scored below rank 250	8	5	0.6	https://pragmaticpineapple.com/four-useful-fzf-tricks-for-your-terminal/	4 Useful fzf Tricks for Your Terminal | Pragmatic Pineapple 🍍	pragmaticpineapple.com
+below_cutoff	qualified but scored below rank 250	7	5	0.4	http://aws.typepad.com/aws/2013/09/new-aws-command-line-interface-cli.html	New AWS Command Line Interface (CLI) | AWS News Blog	aws.typepad.com
+below_cutoff	qualified but scored below rank 250	7	6	0.2	https://blog.liw.fi/posts/2022/05/07/unix-cli/	Unix command line conventions over time	blog.liw.fi
+below_cutoff	qualified but scored below rank 250	7	5	0.4	https://www.pement.org/sed/make_indexes.txt	www.pement.org/sed/make_indexes.txt	pement.org
+below_cutoff	qualified but scored below rank 250	6	5	0.2	http://aurelio.net/shell/canivete/	Canivete Suíço do Shell (Bash) | Aurelio.net	aurelio.net
+below_cutoff	qualified but scored below rank 250	6	6	0.0	https://daniel.haxx.se/blog/2023/07/31/introducing-curl-command-line-variables/	introducing curl command line variables | daniel.haxx.se	daniel.haxx.se
+below_cutoff	qualified but scored below rank 250	6	5	0.2	https://ericgreer.info/post/2025-08-31-simple-dotfiles-script/	Eric Greer Weblog	ericgreer.info
+below_cutoff	qualified but scored below rank 250	6	6	0.0	https://www.linuxuprising.com/2019/11/how-to-show-available-wifi-networks.html	How To Show Available WiFi Networks, Their Channels, Signal Strength And More From The Com	linuxuprising.com
+below_cutoff	qualified but scored below rank 250	5	5	0.0	https://heitorpb.github.io/bla/timeout/	TIL: timeout in Bash scripts | Heitor's log	heitorpb.github.io
+excluded	dup: same content as the github.com/onceupon/Bash-Oneliner repo	610	319	0.9	https://onceupon.github.io/Bash-Oneliner/	Bash-Oneliner | A collection of handy Bash One-Liners and terminal tricks for data process	onceupon.github.io
+excluded	tool docs: nb note-taking tool	448	87	4.1	https://xwmx.github.io/nb/	nb · command line and local web plain text note-taking, bookmarking, archiving, and knowl	xwmx.github.io
+excluded	man-page prose inside <pre>: mis-scored	416	26	15.0	https://man7.org/linux/man-pages/man1/bash.1.html	bash(1) - Linux manual page	man7.org
+excluded	multi-language pages: shell-only count not measurable (and the site now answers curl with a bot challenge)	329	124	1.7	https://rosettacode.org/wiki/Associative_array/Creation#UNIX_Shell	Associative array/Creation - Rosetta Code	rosettacode.org
+excluded	fork: translation of pure-bash-bible	312	119	1.6	https://github.com/A-BenMao/pure-bash-bible-zh_CN	以下是翻译后的原文 #	github.com/A-BenMao/pure-bash-bible-zh_CN
+excluded	other shell: zsh	284	146	0.9	https://zsh.sourceforge.io/Guide/zshguide05.html#l135	 A User's Guide to the Z-Shell 	zsh.sourceforge.io
+excluded	man-page text (other shells/tools)	266	17	14.6	https://www.mirbsd.org/htman/i386/man1/mksh.htm	RTFM mksh(1), pwd(1), rksh(1), sh(1), test(1), [(1)	mirbsd.org
+excluded	malware-script analysis (xz backdoor), not a technique page	248	64	2.9	https://research.swtch.com/xz-script	research!rsc: The xz attack shell script	research.swtch.com
+excluded	other shell: zsh	244	30	7.1	http://grml.org/zsh/zsh-lovers.html	ZSH-LOVERS(1)	grml.org
+excluded	argues for other languages	218	95	1.3	https://monzool.net/blog/2024/07/14/a-second-search-for-bash-scripting-alternatives/	A Second Search for Bash Scripting Alternatives	monzool.net
+excluded	not shell: Java/BigQuery/psql/Perl docs	204	73	1.8	http://www.martinfowler.com/articles/refactoring-pipelines.html	Refactoring with Loops and Collection Pipelines	martinfowler.com
+excluded	not shell: Java/BigQuery/psql/Perl docs	169	91	0.9	http://perldoc.perl.org/perlop.html	perlop - Perl expressions: operators, precedence, string literals - Perldoc Browser	perldoc.perl.org
+excluded	other shell: fish/nu/elvish/ysh/xonsh	167	97	0.7	https://fishshell.com/docs/current/language.html?job-control#job-control	The fish language &#8212; fish-shell 4.9.3 documentation	fishshell.com
+excluded	offensive-security / hardening content	163	52	2.1	https://github.com/d4t4s3c/OffensiveReverseShellCheatSheet	Offensive Reverse Shell (Cheat Sheet)	github.com/d4t4s3c/OffensiveReverseShellCheatSheet
+excluded	not shell: Java/BigQuery/psql/Perl docs	135	15	8.0	https://cloud.google.com/bigquery/docs/pipe-syntax-guide	Work with pipe query syntax &nbsp;|&nbsp; BigQuery &nbsp;|&nbsp; Google Cloud Documentatio	cloud.google.com
+excluded	not shell: Java/BigQuery/psql/Perl docs	125	34	2.7	https://tomcam.github.io/postgres/	psql command line tutorial and cheat sheet | postgres	tomcam.github.io
+excluded	mirror of Greg's Wiki BashPitfalls	121	82	0.5	http://bash.cumulonim.biz/BashPitfalls.html	BashPitfalls	bash.cumulonim.biz
+excluded	mirror of a catonmat.net article	107	49	1.2	https://sites.astro.caltech.edu/~srk/Unix/SRKUnix/bash/redirection.html	Bash One-Liners Explained, Part III: All about redirections	sites.astro.caltech.edu
+excluded	same article as opensource.com (identical measured counts 27/173/66)	93	27	2.4	https://iridakos.com/programming/2018/03/01/bash-programmable-completion-tutorial	Creating a bash completion script	iridakos.com
+excluded	other shell: zsh	84	34	1.5	http://zsh.sourceforge.net/Doc/Release/Expansion.html	14 Expansion (zsh)	zsh.sourceforge.net
+excluded	fork: translation of bash-handbook	77	47	0.6	https://github.com/liushuaikobe/bash-handbook-zh-CN	bash-handbook-zh-CN	github.com/liushuaikobe/bash-handbook-zh-CN
+excluded	tool docs (relational pipes), not shell technique	76	27	1.8	https://relational-pipes.globalcode.info/v_0/examples-rdf-sparql.xhtml	Querying an RDF triplestore using SPARQL – Relational pipes	relational-pipes.globalcode.info
+excluded	dotfiles/tool-management notes, not bash technique	76	49	0.6	https://westurner.github.io/tools/#bash	Tools &mdash; westurner/tools	westurner.github.io
+excluded	other language / not shell	67	36	0.9	https://contextgeneric.dev/blog/hypershell-release/	Hypershell: A Type-Level DSL for Shell-Scripting in Rust | Context-Generic Programming	contextgeneric.dev
+excluded	other shell: fish/nu/elvish/ysh/xonsh	67	17	2.9	https://www.nushell.sh/book/loading_data.html#sqlite	Loading Data | Nushell	nushell.sh
+excluded	other shell: zsh	67	34	1.0	https://thevaluable.dev/zsh-expansion-guide-example/	A Guide to Zsh Expansion with Examples	thevaluable.dev
+excluded	not shell	64	27	1.4	https://lolcads.github.io/posts/2022/06/dirty_pipe_cve_2022_0847/	Exploration of the Dirty Pipe Vulnerability (CVE-2022-0847) :: lolcads tech blog	lolcads.github.io
+excluded	not shell: Java/BigQuery/psql/Perl docs	63	15	3.2	http://phili.pe/posts/postgresql-on-the-command-line/	PostgreSQL on the Command Line · Philipe Fatio	phili.pe
+excluded	other shell: zsh	62	18	2.4	https://www.arp242.net/why-zsh.html	s/bash/zsh/g	arp242.net
+excluded	dotfiles/tool-management notes, not bash technique	61	13	3.7	https://alchemists.io/projects/dotfiles	Dotfiles | Alchemists	alchemists.io
+excluded	other shell: fish/nu/elvish/ysh/xonsh	60	25	1.4	https://oils.pub/release/latest/doc/error-handling.html	YSH Fixes Shell's Error Handling (`errexit`)	oils.pub
+excluded	not shell	59	39	0.5	https://www.lisenet.com/2017/centos-7-server-hardening-guide/	CentOS 7 Server Hardening Guide | Lisenet.com :: Linux | Security | Networking	lisenet.com
+excluded	malware-script analysis (xz backdoor), not a technique page	56	10	4.6	https://gynvael.coldwind.pl/?lang=en&id=782	xz/liblzma: Bash-stage Obfuscation Explained - gynvael.coldwind//vx.log	gynvael.coldwind.pl
+excluded	dup host of prithu.dev	56	19	1.9	https://prithu.xyz/posts/unix-pipeline/	The beauty of Unix pipelines	prithu.xyz
+excluded	not shell	54	11	3.9	https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/async_function	async function - JavaScript | MDN	developer.mozilla.org
+excluded	not shell	54	10	4.4	https://rewiring.bearblog.dev/azure-devops-in-action-pt-iii-reasonably-secure-deploys-to-iis/	Azure Pipelines in action pt. III - hub-and-spoke model for deploying to IIS – Rewiring	rewiring.bearblog.dev
+excluded	OS spec/handbook pages	52	20	1.6	https://refspecs.linuxfoundation.org/LSB_4.0.0/LSB-Core-generic/LSB-Core-generic.html#COMMAND	Linux Standard Base Core Specification 4.0	refspecs.linuxfoundation.org
+excluded	not shell	48	33	0.5	http://jimmyg.org/blog/2009/working-with-python-subprocess.html	Working with Python subprocess - Shells, Processes, Streams, Pipes, Redirects and More	jimmyg.org
+excluded	not shell	47	21	1.2	https://benhoyt.com/writings/count-words/	Performance comparison: counting words in Python, Go, C++, C, AWK, Forth, and Rust	benhoyt.com
+excluded	not bash technique	46	15	2.1	https://github.com/shareAI-lab/BashClaw	Install	github.com/shareAI-lab/BashClaw
+excluded	off-topic: ripgrep benchmarks	45	43	0.0	https://blog.burntsushi.net/ripgrep/	ripgrep is faster than {grep, ag, git grep, ucg, pt, sift} - Andrew Gallant's Blog	blog.burntsushi.net
+excluded	off-topic: ripgrep benchmarks	45	43	0.0	https://burntsushi.net/ripgrep/	ripgrep is faster than {grep, ag, git grep, ucg, pt, sift} - Andrew Gallant's Blog	burntsushi.net
+excluded	other language / not shell	45	16	1.8	http://canonical.org/~kragen/sw/dev3/server.s	httpdito-386: small assembly HTTP server program for i386 Linux.	canonical.org
+excluded	PowerShell	45	18	1.5	https://learn.microsoft.com/en-gb/powershell/module/microsoft.powershell.core/about/about_pipelines?view=powershell-7.4	about_Pipelines - PowerShell | Microsoft Learn	learn.microsoft.com
+excluded	not shell	40	16	1.5	https://muhammadraza.me/2025/building-cicd-pipeline-runner-python/	Building a CI/CD Pipeline Runner from Scratch in Python	muhammadraza.me
+excluded	not shell	39	34	0.1	https://www.pythonmorsels.com/cli-tools/	Python's many command-line utilities - Python Morsels	pythonmorsels.com
+excluded	other shell (es) page	38	25	0.5	http://stuff.mit.edu/afs/sipb/user/yandros/doc/es-usenix-winter93.html	Es: A shell with higher-order functions	stuff.mit.edu
+excluded	other language / not shell	37	9	3.1	http://rexegg.com/regex-best-trick.html	The Best Regex Trick	rexegg.com
+excluded	PowerShell	36	25	0.4	https://docs.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_operators	about_Operators - PowerShell | Microsoft Learn	docs.microsoft.com
+excluded	other language / not shell	35	10	2.5	https://janet.guide/scripting/	Janet for Mortals	janet.guide
+excluded	dup host of linode.com	35	28	0.2	http://library.linode.com/using-linux/administration-basics	Linux System Administration Basics | Linode	library.linode.com
+excluded	argues for other languages	35	18	0.9	https://pythonspeed.com/articles/shell-scripts/	Please stop writing shell scripts	pythonspeed.com
+excluded	generic cli cheatsheet / unclear	34	16	1.1	https://mhoffman.github.io/2015/05/21/how-to-navigate-directories-with-the-shell.html	How to navigate directories faster with bash	mhoffman.github.io
+excluded	other language / not shell	34	6	4.7	https://sdomi.pl/weblog/15-witchcraft-minecraft-server-in-bash/	My thoughts on writing a Minecraft server from scratch (in Bash)	sdomi.pl
+excluded	offensive-security / hardening content	32	25	0.3	https://highon.coffee/blog/penetration-testing-tools-cheat-sheet/	Pen Testing Tools Cheat Sheet	highon.coffee
+excluded	tmux / other tools	32	32	0.0	https://ianthehenry.com/posts/how-to-configure-tmux/	How to configure tmux, from scratch	ianthehenry.com
+excluded	not shell	31	6	4.2	https://thephp.foundation/blog/2025/07/11/php-85-adds-pipe-operator/	PHP 8.5 Adds Pipe Operator: What it means &mdash; The PHP Foundation &mdash; Supporting, A	thephp.foundation
+excluded	dotfiles/tool-management notes, not bash technique	30	6	4.0	https://iamdan.me/better-dotfiles	Better Dotfiles | I am Dan	iamdan.me
+excluded	dotfiles/tool-management notes, not bash technique	30	8	2.8	https://www.matheusmoreira.com/articles/managing-dotfiles-with-make	Dotfiles with make	matheusmoreira.com
+excluded	other language / not shell	30	6	4.0	https://sharpscript.net/docs/syntax#combine-strengths-of-all-languages	Syntax	sharpscript.net
+excluded	tmux / other tools	30	10	2.0	https://willhbr.net/2025/03/20/snakes-in-a-pane/	Snakes in a Pane: Building Snake Entirely Within a tmux Config File — Will Richardson	willhbr.net
+excluded	offensive-security / hardening content	29	29	0.0	https://madaidans-insecurities.github.io/guides/linux-hardening.html	Linux Hardening Guide | Madaidan's Insecurities	madaidans-insecurities.github.io
+excluded	other language	28	21	0.3	http://blog.golang.org/pipelines	Go Concurrency Patterns: Pipelines and cancellation - The Go Programming Language	blog.golang.org
+excluded	other language / not shell	28	22	0.3	http://www.curiousvenn.com/?p=353	 Notes from MPUG, June 2013: &#8220;Python one-liners&#8221; talk | Curious Venn 	curiousvenn.com
+excluded	other shell: fish/nu/elvish/ysh/xonsh	28	16	0.8	https://elv.sh/learn/unique-semantics.html#motivation	 Unique semantics - Elvish Shell 	elv.sh
+excluded	not bash technique	28	22	0.3	https://fadeevab.com/how-to-setup-qemu-output-to-console-and-automate-using-shell-script/	How to Setup QEMU Output to Console and Automate Using Shell Script	fadeevab.com
+excluded	offensive-security / hardening content	27	19	0.4	https://anisse.astier.eu/qual-sigsegv1-rtfm.html	SIGSEGV1 qualification CTF - Linux Engineer's random thoughts	anisse.astier.eu
+excluded	tool/vendor docs	27	14	0.9	https://clig.dev/	Command Line Interface Guidelines	clig.dev
+excluded	other shell: fish/nu/elvish/ysh/xonsh	27	5	4.4	https://www.milanvit.net/post/my-ultimate-shell-setup-with-fish-shell-and-tmux/	My ultimate shell setup with Fish shell and Tmux (Part 1)	milanvit.net
+excluded	other language / not shell	25	13	0.9	https://benoithamelin.tumblr.com/ruby1line/	Ruby one-liners	benoithamelin.tumblr.com
+excluded	not bash technique (Emacs eshell / grep segfault story / tool site / Go article)	25	20	0.2	https://www.masteringemacs.org/article/complete-guide-mastering-eshell	Mastering Eshell - Mastering Emacs 	masteringemacs.org
+excluded	pipeline-word false positives (CI / graphics / games)	24	16	0.5	https://blog.matiaspan.dev/posts/exploring-dagger-streamlining-ci-cd-pipelines-with-code/	Exploring Dagger: Streamlining CI/CD Pipelines with Code – A Developer's Guide	blog.matiaspan.dev
+excluded	man-page text (other shells/tools)	24	10	1.4	https://docs.oracle.com/cd/E36784_01/html/E36870/ksh-1.html	ksh - man pages section 1: User Commands	docs.oracle.com
+excluded	generic cli cheatsheet / unclear	24	13	0.8	https://github.com/funnyzak/cli-cheatsheets	Command-Line Cheatsheets 	github.com/funnyzak/cli-cheatsheets
+excluded	tmux / other tools	22	8	1.8	http://blog.chaselambda.com/2014/11/25/how-tmux-starts-up-an-adventure-with-linux-tools.html	How Tmux Starts Up: An Adventure With Linux Tools	blog.chaselambda.com
+excluded	other language / not shell	22	8	1.8	https://plumbum.readthedocs.io/en/latest/	Plumbum: Shell Combinators	plumbum.readthedocs.io
+excluded	C-level pipe internals / puzzle, not shell technique	21	12	0.8	https://mazzo.li/posts/fast-pipes.html	How fast are Linux pipes anyway?	mazzo.li
+excluded	OS spec/handbook pages	21	14	0.5	https://www.openbsd.org/faq/ports/specialtopics.html#RcScripts	OpenBSD Ports: Special Porting Topics	openbsd.org
+excluded	tool/vendor docs	21	10	1.1	https://smallstep.com/blog/command-line-secrets/	How to Handle Secrets on the Command Line	smallstep.com
+excluded	tool/vendor docs	21	11	0.9	https://www.sqlite.org/cli.html	Command Line Shell For SQLite	sqlite.org
+excluded	other language / not shell	20	14	0.4	http://www.cbloom.com/3d/techdocs/pipeline.txt	www.cbloom.com/3d/techdocs/pipeline.txt	cbloom.com
+excluded	dotfiles/tool-management notes, not bash technique	20	18	0.1	https://germano.dev/dotfiles/	Conquer your dotfiles with VCSH and MR - germano.dev	germano.dev
+excluded	C-level pipe internals / puzzle, not shell technique	20	7	1.9	http://www.linusakesson.net/programming/pipelogic/index.php	Pipe Logic	linusakesson.net
+excluded	man-page text (other shells/tools)	20	11	0.8	https://man.openbsd.org/ksh.1	ksh(1) - OpenBSD manual pages	man.openbsd.org
+excluded	tool/vendor docs	20	20	0.0	https://mosh.org/	Mosh: the mobile shell	mosh.org
+excluded	other language	20	12	0.7	https://nithinbekal.com/posts/ruby-sed-awk/	How to use Ruby instead of sed and awk	nithinbekal.com
+excluded	tmux / other tools	19	19	0.0	https://devel.tech/tips/n/tMuXz2lj/the-power-of-tmux-hooks/	The power of tmux hooks | devel.tech	devel.tech
+excluded	not shell	19	11	0.7	https://docs.python.org/3/library/argparse.html	argparse — Parser for command-line options, arguments and subcommands &#8212; Python 3.1	docs.python.org
+excluded	not bash technique	19	12	0.6	https://github.com/Leimsoto/office365-linux	Microsoft Office 365 en Linux (WineCX)	github.com/Leimsoto/office365-linux
+excluded	man-page text (other shells/tools)	19	9	1.1	http://linux.die.net/man/1/ack	ack(1): grep-like text finder - Linux man page	linux.die.net
+excluded	tool/vendor docs	18	12	0.5	https://busybox.net/downloads/BusyBox.html	BusyBox - The Swiss Army Knife of Embedded Linux	busybox.net
+excluded	tool/vendor docs	18	6	2.0	http://docopt.org/	docopt—language for description of command-line interfaces	docopt.org
+excluded	not bash technique	18	12	0.5	https://github.com/basnijholt/dotfiles	🏠 basnijholt's dotfiles	github.com/basnijholt/dotfiles
+excluded	not bash technique	18	11	0.6	http://hackerthemes.com/bootstrap-cheatsheet	Bootstrap 4 Cheat Sheet - The ultimate list of Bootstrap classes	hackerthemes.com
+excluded	not bash technique (Emacs eshell / grep segfault story / tool site / Go article)	17	12	0.4	http://blog.loadzero.com/blog/tracking-down-a-segfault-in-grep/	Tracking down a segfault in grep	blog.loadzero.com
+excluded	not bash technique (Emacs eshell / grep segfault story / tool site / Go article)	17	9	0.9	http://explainshell.com/	explainshell.com - match command-line arguments to their help text	explainshell.com
+excluded	tool/vendor docs	16	11	0.5	http://babun.github.io/	Babun - a windows shell you will love!	babun.github.io
+excluded	not bash technique (Emacs eshell / grep segfault story / tool site / Go article)	16	9	0.8	http://blog.gopheracademy.com/cron-filesystem/	Cron as a file system | Gopher Academy Blog	blog.gopheracademy.com
+excluded	offensive-security / hardening content	16	8	1.0	https://dhavalkapil.com/blogs/Shellcode-Injection/	Shellcode Injection - Dhaval Kapil	dhavalkapil.com
+excluded	other shell: fish/nu/elvish/ysh/xonsh	16	12	0.3	https://lwn.net/Articles/136232/	Fish - The friendly interactive shell [LWN.net]	lwn.net
+excluded	not shell	16	11	0.5	https://pub.dev/packages/dshell	dshell | Dart package	pub.dev
+excluded	OS spec/handbook pages	15	14	0.1	https://www.dragonflybsd.org/docs/handbook/UnixBasics/#index4h2	DragonFlyBSD: UnixBasics	dragonflybsd.org
+excluded	OS spec/handbook pages	15	9	0.7	http://uw714doc.sco.com/en/DIFFS/UNIX95_Conformance.html#ksh-93_vs_ksh-88	UNIX95 conformance	uw714doc.sco.com
+excluded	dotfiles/tool-management notes, not bash technique	14	14	0.0	https://gvolpe.com/blog/home-manager-dotfiles-management/	Home Manager: dotfiles management - Gabriel Volpe	gvolpe.com
+excluded	offensive-security / hardening content	14	13	0.1	https://nfsec.pl/	NF.sec &#8211; Bezpieczeństwo systemu Linux	nfsec.pl
+excluded	offensive-security / hardening content	14	12	0.2	https://www.shellntel.com/blog/2017/2/8/how-to-build-a-8-gpu-password-cracker	8 GPU Password Cracker: High-Performance Hashcat Build Guide	shellntel.com
+excluded	tmux / other tools	13	5	1.6	https://evgeniipendragon.com/posts/customizing-tmux-and-making-it-less-dreadful/	Customizing tmux and making it less dreadful | Evgenii Pendragon	evgeniipendragon.com
+excluded	single-command/ads/low-substance pages	13	7	0.9	https://www.geeksforgeeks.org/linux-unix/pv-command-in-linux-with-examples/	pv command in Linux with Examples - GeeksforGeeks	geeksforgeeks.org
+excluded	single-command/ads/low-substance pages	13	7	0.9	https://lobste.rs/s/kidktn/bash_patch_add_shopt_for_implicit_place	Bash patch - Add shopt for implicit && in place of ; for functions end of lines | Lobsters	lobste.rs
+excluded	tmux / other tools	13	10	0.3	https://richardscollin.github.io/tmux-rs/	Introducing tmux-rs | tmux-rs	richardscollin.github.io
+excluded	pipeline-word false positives (CI / graphics / games)	12	7	0.7	https://about.gitlab.com/2018/11/14/how-we-spent-two-weeks-hunting-an-nfs-bug/	How we spent two weeks hunting an NFS bug in the Linux kernel	about.gitlab.com
+excluded	tool/vendor docs	12	6	1.0	https://dt.plumbing/	dt: duck tape for your unix pipes	dt.plumbing
+excluded	tool/vendor docs	12	8	0.5	https://hub.github.com/	hub · an extension to command-line git	hub.github.com
+excluded	tmux / other tools	12	12	0.0	https://leimao.github.io/blog/Tmux-Tutorial/	Tmux Tutorial - Lei Mao&#039;s Log Book	leimao.github.io
+excluded	man-page text (other shells/tools)	12	10	0.2	https://www.mankier.com/1/shellcheck	shellcheck: Shell script analysis tool | Man Page | Commands | ShellCheck | ManKier	mankier.com
+excluded	tool/vendor docs	12	7	0.7	https://mise.jdx.dev/tips-and-tricks.html#shebang	Tips & Tricks | mise-en-place	mise.jdx.dev
+excluded	cron/ssh/beginner pages, not shell technique	12	11	0.1	https://www.rosehosting.com/blog/basic-shell-commands-after-putty-ssh-logon/	Basic Shell Commands After Putty SSH Logon | RoseHosting	rosehosting.com
+excluded	tool/vendor docs	12	5	1.4	https://seashells.io/	Seashells	seashells.io
+excluded	other shell: fish/nu/elvish/ysh/xonsh	12	5	1.4	https://xon.sh/	Xonsh — Python-powered shell for Linux, macOS, Windows, Android	xon.sh
+excluded	other language	11	8	0.4	http://chrisdone.com/posts/shell-conduit	shell-conduit: Write shell scripts in Haskell with Conduit	chrisdone.com
+excluded	other language	11	5	1.2	http://www.haskellforall.com/2015/01/use-haskell-for-shell-scripting.html	Haskell for all: Use Haskell for shell scripting	haskellforall.com
+excluded	other language / not shell	11	6	0.8	http://jamie-wong.com/2013/07/12/grep-test/	Too DRY - The Grep Test	jamie-wong.com
+excluded	OS spec/handbook pages	11	7	0.6	https://www.linuxfromscratch.org/blfs/view/svn/multimedia/ffmpeg.html	 FFmpeg-9.0.2 	linuxfromscratch.org
+excluded	PowerShell	11	6	0.8	https://msdn.microsoft.com/en-us/commandline/wsl/interop	Working across file systems | Microsoft Learn	msdn.microsoft.com
+excluded	C-level pipe internals / puzzle, not shell technique	11	7	0.6	https://qsantos.fr/2024/08/25/linux-pipes-are-slow/	Linux Pipes are Slow - Quentin Santos	qsantos.fr
+excluded	dup host of blog.sanctum.geek.nz	11	9	0.2	https://sanctum.geek.nz/arabesque/cron-best-practices/	 Cron best practices | Arabesque 	sanctum.geek.nz
+excluded	tmux / other tools	11	7	0.6	http://www.unwiredcouch.com/2013/11/15/my-tmux-setup.html	My Tmux Setup on unwiredcouch.com	unwiredcouch.com
+excluded	pipeline-word false positives (CI / graphics / games)	11	10	0.1	https://whiskybadger.io/post/introducing-go-pipeline/	 Introducing Go-Pipeline · 	whiskybadger.io
+excluded	other language	10	5	1.0	https://arathunku.com/b/2024/shell-scripting-with-elixir/	@arathunku - Shell scripting with Elixir	arathunku.com
+excluded	pipeline-word false positives (CI / graphics / games)	10	9	0.1	https://www.faucet-pipeline.org/	 faucet-pipeline – the no-nonsense asset pipeline for humans 	faucet-pipeline.org
+excluded	offensive-security / hardening content	10	8	0.2	https://github.com/PeterMosmans/security-scripts	security-scripts	github.com/PeterMosmans/security-scripts
+excluded	other language	10	5	1.0	https://julialang.org/blog/2013/04/put-this-in-your-pipe/	Put This In Your Pipe	julialang.org
+excluded	man-page text (other shells/tools)	10	7	0.4	https://manpages.debian.org/cgi-bin/man.cgi?query=dash&sektion=1	dash(1) — dash — Debian trixie — Debian Manpages	manpages.debian.org
+excluded	not shell	10	10	0.0	https://marketplace.visualstudio.com/items?itemName=timonwong.shellcheck	 ShellCheck - Visual Studio Marketplace 	marketplace.visualstudio.com
+excluded	other language / not shell	10	5	1.0	https://rust-script.org/	rust-script | Run Rust files and expressions as scripts without any setup or compilation s	rust-script.org
+excluded	not bash technique	8	8	0.0	https://alexwlchan.net/2024/creating-a-safari-webarchive/	Creating a Safari webarchive from the command line – alexwlchan	alexwlchan.net
+excluded	cron/ssh/beginner pages, not shell technique	8	8	0.0	https://andrewpillar.com/programming/2022/12/08/systemd-timer-an-alternative-to-cron/	systemd.timer, an alternative to cron - Andrew Pillar's Blog	andrewpillar.com
+excluded	single-command/ads/low-substance pages	8	5	0.6	https://blog.g5cybersecurity.com/bash-script-argument-security/	Bash Script Argument Security - Blog | G5 Cyber Security	blog.g5cybersecurity.com
+excluded	cron/ssh/beginner pages, not shell technique	8	8	0.0	https://blog.healthchecks.io/2021/10/how-debian-cron-handles-dst-transitions/	How Debian Cron Handles DST Transitions &#x2013; Healthchecks.io Blog	blog.healthchecks.io
+excluded	pipeline-word false positives (CI / graphics / games)	8	6	0.3	https://blog.marcgravell.com/2018/07/pipe-dreams-part-1.html	Code, code and more code.: Pipe Dreams, part 1	blog.marcgravell.com
+excluded	other language	8	7	0.1	https://www.braveclojure.com/quests/babooka/	Babashka Babooka: Write Command-Line Clojure = | Parallel Programming in Clojure with Redu	braveclojure.com
+excluded	off-topic: FreeBSD quickstart for Linux users	8	7	0.1	https://docs.freebsd.org/en/articles/linux-users/	FreeBSD Quickstart Guide for Linux® Users | FreeBSD Documentation Portal	docs.freebsd.org
+excluded	off-topic: FreeBSD quickstart for Linux users	8	7	0.1	https://www.freebsd.org/doc/en/articles/linux-users/shells.html	FreeBSD Quickstart Guide for Linux® Users | FreeBSD Documentation Portal	freebsd.org
+excluded	tool/vendor docs	8	6	0.3	https://gnutls.org/manual/html_node/gnutls_002dcli-Invocation.html	gnutls-cli Invocation (GnuTLS 3.8.13)	gnutls.org
+excluded	pipeline-word false positives (CI / graphics / games)	8	8	0.0	https://jorenjoestar.github.io/post/data_driven_rendering_pipeline/	Data Driven Rendering: Pipelines | Gabriel's Virtual Tavern	jorenjoestar.github.io
+excluded	tmux / other tools	8	5	0.6	https://mil.ad/blog/2024/remote-clipboard.html	Copy from tmux/nvim to clipboard over SSH | Milad Alizadeh	mil.ad
+excluded	tool/vendor docs	8	7	0.1	https://www.passwordstore.org/	Pass: The Standard Unix Password Manager	passwordstore.org
+excluded	not bash technique	8	5	0.6	https://sigma-star.at/blog/2025/06/deep-down-the-rabbit-hole-bash-overlayfs-and-a-30-year-old-surprise/	Deep Down the Rabbit Hole: Bash, OverlayFS, and a 30-Year-Old Surprise	sigma-star.at
+excluded	PowerShell	8	8	0.0	https://technet.microsoft.com/en-us/library/ff730939.aspx	Windows PowerShell Tip: Adding a Simple Menu to a Windows PowerShell Script | Microsoft Le	technet.microsoft.com
+excluded	cron/ssh/beginner pages, not shell technique	8	7	0.1	https://thishosting.rocks/how-to-enable-ssh-on-ubuntu/	How to Enable SSH on Ubuntu (22.04, 20.04, 21.10, etc.)	thishosting.rocks
+excluded	tmux / other tools	8	6	0.3	https://www.wezm.net/technical/2019/10/useful-command-line-tools/	An Illustrated Guide to Some Useful Command Line Tools - WezM.net by Wesley Moore	wezm.net
+excluded	other language	7	7	0.0	https://www.astrecipes.net/blog/2018/07/20/cmd-line-apps-with-clojure-and-graalvm/	Command-line apps with Clojure and GraalVM: 300x better start-up times	astrecipes.net
+excluded	tmux / other tools	7	5	0.4	https://hamvocke.com/blog/a-guide-to-customizing-your-tmux-conf/	Make tmux Pretty and Usable - Ham Vocke	hamvocke.com
+excluded	other language	7	5	0.4	https://www.karimarttila.fi/clojure/2020/09/01/using-clojure-in-command-line-with-babashka.html	Using Clojure in Command Line with Babashka | Kari Marttila Blog	karimarttila.fi
+excluded	not shell	7	7	0.0	https://nbconvert.readthedocs.io/en/latest/usage.html#convert-markdown	Using as a command line tool &#8212; nbconvert 7.17.1 documentation	nbconvert.readthedocs.io
+excluded	tmux / other tools	7	6	0.2	https://sunainapai.in/blog/get-started-with-tmux/	Get Started With Tmux - Sunaina Pai	sunainapai.in
+excluded	single-command/ads/low-substance pages	7	7	0.0	https://www.tutorialspoint.com/unix_commands/psql.htm	psql Command in Linux	tutorialspoint.com
+excluded	cron/ssh/beginner pages, not shell technique	6	6	0.0	https://carlosbecker.dev/posts/ssh-tips-and-tricks/	SSH Tips and Tricks	carlosbecker.dev
+excluded	not bash technique	6	6	0.0	https://leancrew.com/all-this/2022/02/wordle-and-grep/	Wordle and grep - All this	leancrew.com
+excluded	pipeline-word false positives (CI / graphics / games)	6	5	0.2	https://mokacoding.com/blog/pipe-wrench/	What can a pipe wrench teach us about software engineering? | mokacoding	mokacoding.com
+excluded	cron/ssh/beginner pages, not shell technique	6	5	0.2	https://wasp.sh/blog/2025/05/28/how-to-run-cron-jobs-in-postgress-without-extra-infrastructure	How to Run CRON Jobs in Postgres Without Extra Infrastructure | Wasp	wasp.sh
+excluded	pipeline-word false positives (CI / graphics / games)	5	5	0.0	https://engineering.skroutz.gr/blog/speeding-up-build-pipelines-with-mistry/	Speeding Up Our Build Pipelines &#8211; Skroutz Engineering	engineering.skroutz.gr
+excluded	cron/ssh/beginner pages, not shell technique	5	5	0.0	http://tech.instacart.com/ohmycron/	OhMyCron &#8212; Locking, Logging and Environment setup for cron &#8211; Instacart Tech Bl	tech.instacart.com
+github_cap	beyond the 30-repo GitHub cap (scored lower than 30 other qualifying repos)	10	7	0.4	https://github.com/modernish/modernish	modernish – harness the shell #	github.com/modernish/modernish
+github_cap	beyond the 30-repo GitHub cap (scored lower than 30 other qualifying repos)	9	9	0.0	https://github.com/dappvibe/bash-colors	github.com/dappvibe/bash-colors	github.com/dappvibe/bash-colors
+github_cap	beyond the 30-repo GitHub cap (scored lower than 30 other qualifying repos)	7	5	0.4	https://github.com/Silejonu/bash_loading_animations	The ultimate collection of loading animations for Bash	github.com/Silejonu/bash_loading_animations
+github_cap	beyond the 30-repo GitHub cap (scored lower than 30 other qualifying repos)	6	5	0.2	https://github.com/Hezkore/bash-ai	Bash AI	github.com/Hezkore/bash-ai
+github_cap	beyond the 30-repo GitHub cap (scored lower than 30 other qualifying repos)	6	6	0.0	https://github.com/pmarinov/bash-scripting-guide	Advanced Bash-Scripting Guide	github.com/pmarinov/bash-scripting-guide
+github_cap	beyond the 30-repo GitHub cap (scored lower than 30 other qualifying repos)	5	5	0.0	https://github.com/DouglasFreshHabian/Cheatsh33ts	Cheatsh33ts: 📙📘📕	github.com/DouglasFreshHabian/Cheatsh33ts
+github_cap	beyond the 30-repo GitHub cap (scored lower than 30 other qualifying repos)	5	5	0.0	https://github.com/alexanderepstein/Bash-Snippets	Bash-Snippets	github.com/alexanderepstein/Bash-Snippets
+github_cap	beyond the 30-repo GitHub cap (scored lower than 30 other qualifying repos)	5	5	0.0	https://github.com/gookit/gcli	GCli 	github.com/gookit/gcli

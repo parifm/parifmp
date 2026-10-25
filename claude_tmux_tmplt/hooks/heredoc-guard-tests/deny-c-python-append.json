@@ -1,0 +1,1 @@
+{"session_id":"fixture","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"python - <<EOF\nopen('log.txt','a').write('y\\n')\nEOF","description":"rule c: python - heredoc appends to a file"}}

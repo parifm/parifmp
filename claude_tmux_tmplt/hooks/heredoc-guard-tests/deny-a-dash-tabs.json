@@ -1,0 +1,1 @@
+{"session_id":"fixture","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"if true; then\n\tcat <<-END\n\techo hi\n\tcat <<-END\n\tEND\nfi","description":"rule a: <<- with tab-indented nested opener and terminator"}}

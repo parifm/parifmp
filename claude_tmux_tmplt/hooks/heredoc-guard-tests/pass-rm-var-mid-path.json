@@ -1,0 +1,1 @@
+{"session_id":"fixture","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"rm -rf dir/$x; git rm -r --cached \"$f\"; rm \"$plain_file\"","description":"pass (deliberate): variable mid-path, git rm, rm without -r"}}

@@ -1,0 +1,1 @@
+{"session_id":"fixture","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"mk pass-e-echo-dq 'echo \"run rm -rf $D later\"'\nmk pass-d-echo 'echo \"launchctl bootout gui/$UID/x\"'"}}

@@ -1,0 +1,1 @@
+{"session_id":"fixture","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"python3 - <<'EOF'\nimport json\n# open(p, 'w') would be refused\nd = json.load(open(\"a.json\"))\nprint(\",\".join(d), \"w\")\nEOF","description":"pass: python heredoc that only reads"}}

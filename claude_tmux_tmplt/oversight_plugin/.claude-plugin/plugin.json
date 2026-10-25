@@ -1,0 +1,1 @@
+{"name":"oversight","version":"0.3.0","description":"Standard for all team sessions: every 6 main-agent steps, a no-tools fork of the session model checks for mistakes; each session writes $TEAM_ROOT/.oversight/<session id>.json for mgr."}

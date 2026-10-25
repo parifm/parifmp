@@ -1,0 +1,1 @@
+{"session_id":"fixture","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"launchctl bootstrap \"gui/$UID\" ~/Library/LaunchAgents/com.x.y.plist","description":"rule d: bootstrap with a quoted variable target"}}

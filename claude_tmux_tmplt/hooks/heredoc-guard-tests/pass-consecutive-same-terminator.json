@@ -1,0 +1,1 @@
+{"session_id":"fixture","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"cat <<'EOF'\none\nEOF\ncat <<EOF\ntwo $HOME\nEOF\necho done","description":"pass: two consecutive heredocs share a terminator"}}

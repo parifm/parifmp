@@ -1,0 +1,1 @@
+{"session_id":"fixture","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"cd ~/work && rm -fr $D/build && echo gone","description":"rule e: rm -fr on an unquoted variable path"}}

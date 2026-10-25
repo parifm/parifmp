@@ -1,0 +1,251 @@
+rank	score	ex	cx	via	site	url	page
+1	5555	877	5.3	curl	tldp.org	https://tldp.org/LDP/abs/html/abs-guide.html	Advanced Bash-Scripting Guide
+2	654	156	3.2	api	stackoverflow.com	https://stackoverflow.com/questions/59895	How do I get the directory where a Bash script is located from within…
+3	610	319	0.9	readme	github.com/onceupon/Bash-Oneliner	https://github.com/onceupon/Bash-Oneliner	onceupon/Bash-Oneliner — A collection of handy Bash One-Liners and te…
+4	528	146	2.6	curl	man.archlinux.org	https://man.archlinux.org/man/parallel_examples.7.en	parallel_examples(7) — Arch manual pages
+5	512	126	3.1	curl	raimonster.com	https://raimonster.com/scripting-field-guide/index.html	Shell Field Guide
+6	455	193	1.4	curl	grymoire.com	http://www.grymoire.com/Unix/sed.html	Sed - An Introduction and Tutorial
+7	396	211	0.9	curl	mywiki.wooledge.org	https://mywiki.wooledge.org/FullBashGuide	FullBashGuide - Greg's Wiki
+8	318	162	1.0	curl	cb.vu	http://cb.vu/unixtoolbox.xhtml	Unix Toolbox | CB.VU
+9	317	120	1.6	readme	github.com/dylanaraps/pure-bash-bible	https://github.com/dylanaraps/pure-bash-bible	dylanaraps/pure-bash-bible — 📖 A collection of pure bash alternatives…
+10	269	1	268.0	curl	lists.gnu.org	http://lists.gnu.org/archive/html/bug-bash/2001-02/msg00054.html	x86 assembler in Bash
+11	265	137	0.9	readme	github.com/miguelmota/bash-streams-handbook	https://github.com/miguelmota/bash-streams-handbook	miguelmota/bash-streams-handbook — 💻 Learn Bash streams, pipelines an…
+12	262	124	1.1	wayback	gnu.org	https://www.gnu.org/software/bash/manual/bash.html	Bash Reference Manual
+13	248	111	1.2	curl	pubs.opengroup.org	https://pubs.opengroup.org/onlinepubs/7908799/xcu/chap2.html#tag_001_009_002	Shell Command Language
+14	239	95	1.5	readme	github.com/ctrlaltvikas/Awesome-Bash-Aliases	https://github.com/ctrlaltvikas/Awesome-Bash-Aliases	ctrlaltvikas/Awesome-Bash-Aliases — 🔥 Curated collection of powerful …
+15	220	55	3.0	readme	github.com/crazyhottommy/bioinformatics-one-liners	https://github.com/crazyhottommy/bioinformatics-one-liners	crazyhottommy/bioinformatics-one-liners — Bioinformatics one liners f…
+16	215	151	0.4	curl	compciv.org	http://www.compciv.org/unix-tools/	General purpose command-line tools
+17	205	83	1.5	readme	github.com/labbots/bash-utility	https://github.com/labbots/bash-utility	labbots/bash-utility — Bash library which provides utility functions …
+18	201	75	1.7	curl	datascienceatthecommandline.com	https://datascienceatthecommandline.com/2e/chapter-5-scrubbing-data.html	Chapter 5 Scrubbing Data | Data Science at the Command Line, 2e
+19	194	56	2.5	curl	softpanorama.org	https://www.softpanorama.org/Scripting/pipes.shtml	Pipes -- powerful and elegant programming paradigm
+20	190	74	1.6	curl	blog.balthazar-rouberol.com	https://blog.balthazar-rouberol.com/text-processing-in-the-shell	Text processing in the shell
+21	187	78	1.4	curl	tiswww.case.edu	http://tiswww.case.edu/php/chet/bash/FAQ	tiswww.case.edu/php/chet/bash/FAQ
+22	185	71	1.6	curl	quickref.me	https://quickref.me/bash	Bash Cheat Sheet & Quick Reference
+23	184	1	183.0	curl	learnxinyminutes.com	https://learnxinyminutes.com/bash/	Learn Bash in Y Minutes
+24	181	81	1.2	curl	matt.might.net	http://matt.might.net/articles/bash-by-example/	Shell programming with bash: by example, by counter-example
+25	177	70	1.5	curl	devhints.io	https://devhints.io/bash	Bash scripting cheatsheet
+26	167	90	0.9	api	codegolf.stackexchange.com	https://codegolf.stackexchange.com/questions/15279	Tips for golfing in Bash
+27	159	109	0.5	readme	github.com/Idnan/bash-guide	https://github.com/Idnan/bash-guide	Idnan/bash-guide — A guide to learn bash
+28	157	48	2.3	readme	github.com/trinib/Linux-Bash-Commands	https://github.com/trinib/Linux-Bash-Commands	trinib/Linux-Bash-Commands — :godmode: Ultimate list of Linux bash co…
+29	156	53	1.9	curl	hyring.com	https://hyring.com/jobseeker-toolkit/interview-questions/technical/shell-scripting	Shell Scripting Interview Questions: 60 Answers & Examples
+30	152	40	2.8	curl	flokoe.github.io	https://flokoe.github.io/bash-hackers-wiki/syntax/pe/	Parameter expansion - The Bash Hackers Wiki
+31	149	38	2.9	api	unix.stackexchange.com	https://unix.stackexchange.com/questions/52313	How to get execution time of a script effectively?
+32	148	58	1.6	curl	news.ycombinator.com	https://news.ycombinator.com/item?id=9869231	Ask HN: Share your favourite bash/zsh aliases | Hacker News
+33	147	62	1.4	curl	earthly.dev	https://earthly.dev/blog/awk-examples/	Understanding AWK - Earthly Blog
+34	144	46	2.1	curl	google.github.io	https://google.github.io/styleguide/shellguide.html	Google Style Guides | Style guides for Google-originated open-source …
+35	133	37	2.6	curl	dwheeler.com	http://www.dwheeler.com/essays/filenames-in-shell.html	Filenames and Pathnames in Shell (bash, dash, ash, ksh, and so on): H…
+36	130	43	2.0	curl	blog.robertelder.org	https://blog.robertelder.org/data-science-linux-command-line/	An Introduction To Data Science On The Linux Command Line
+37	129	49	1.6	curl	linuxgazette.net	https://www.linuxgazette.net/110/anonymous.html	Bash Shell and Beyond LG #110
+38	124	52	1.4	curl	dev.to	https://dev.to/amalshehu/advanced-data-processing-with-awk-and-sed-4f2b	Advanced Data Processing with awk and sed - DEV Community
+39	124	33	2.8	readme	github.com/h4l/json.bash	https://github.com/h4l/json.bash	h4l/json.bash — Command-line tool and bash library that creates JSON
+40	120	54	1.2	curl	catonmat.net	http://www.catonmat.net/blog/sed-one-liners-explained-part-one	Sed One-Liners Explained, Part I: File Spacing, Numbering and Text Co…
+41	119	47	1.5	curl	etalabs.net	https://www.etalabs.net/sh_tricks.html	Rich’s sh (POSIX shell) tricks
+42	118	27	3.4	curl	vermaden.wordpress.com	https://vermaden.wordpress.com/2021/09/13/ghost-in-the-shell-part-6-learn-shell-scripting/	Ghost in the Shell – Part 6 – Learn Shell Scripting | 𝚟𝚎𝚛𝚖𝚊𝚍
+43	115	46	1.5	curl	tecmint.com	https://www.tecmint.com/linux-command-line-tools-data-scientists/	10 Essential Linux Command-Line Tools for Data Scientists
+44	112	46	1.4	readme	github.com/joseluisq/awesome-bash-commands	https://github.com/joseluisq/awesome-bash-commands	joseluisq/awesome-bash-commands — A curated list of awesome Bash usef…
+45	106	48	1.2	curl	grimoire.carcano.ch	https://grimoire.carcano.ch/blog/sed-the-stream-editor/	An easy thus thorough tutorial on sed, the Stream EDitor
+46	104	32	2.2	curl	xmodulo.com	https://www.xmodulo.com/useful-bash-aliases-functions.html	What are useful Bash aliases and functions
+47	102	66	0.5	readme	github.com/arturoherrero/command-line-one-liners	https://github.com/arturoherrero/command-line-one-liners	arturoherrero/command-line-one-liners — Command line one-liners.
+48	101	58	0.7	curl	zerotomastery.io	https://zerotomastery.io/blog/bash-scripting-interview-questions/	Bash Interview Prep: 31 Essential Questions and Answers | Zero To Mas…
+49	100	23	3.3	readme	github.com/azet/community_bash_style_guide	https://github.com/azet/community_bash_style_guide	azet/community_bash_style_guide — Community Bash Style Guide: writing…
+50	100	39	1.6	curl	linuxblog.io	https://linuxblog.io/awk-command-in-linux-a-practical-guide-with-real-examples/	awk Command in Linux: A Practical Guide with Real Examples | LinuxBlo…
+51	98	82	0.2	curl	faqs.org	http://www.faqs.org/docs/air/tsshell.html	An Introduction To Shell Programming
+52	97	15	5.5	curl	mill-build.org	https://mill-build.org/blog/14-bash-zsh-completion.html	Writing Your Own Simple Tab-Completions for Bash and Zsh :: The Mill …
+53	95	28	2.4	curl	aashvik.com	https://aashvik.com/posts/shell-ssg/	an ssg written in shell
+54	93	27	2.4	curl	opensource.com	https://opensource.com/article/18/3/creating-bash-completion-script	How to create a Bash completion script | Opensource.com
+55	89	15	4.9	curl	theory.stanford.edu	https://theory.stanford.edu/~blynn/c/bash.html	Preface - Shell scripts
+56	88	50	0.8	readme	github.com/dullroar/ten-steps-to-linux-survival	https://github.com/dullroar/ten-steps-to-linux-survival	dullroar/ten-steps-to-linux-survival — This is my little "Linux and B…
+57	88	8	10.0	curl	zetcode.com	https://www.zetcode.com/linux/sed-command	Linux sed Command - Complete Guide with 20 Examples
+58	87	17	4.1	curl	cloud.wikis.utexas.edu	https://cloud.wikis.utexas.edu/wiki/spaces/bioiteam/pages/47731435	Scott's list of linux one-liners - Bioinformatics Team (BioITeam) at …
+59	86	52	0.7	readme	github.com/denysdovhan/bash-handbook	https://github.com/denysdovhan/bash-handbook	denysdovhan/bash-handbook — :book: For those who wanna learn Bash
+60	84	21	3.0	curl	oneuptime.com	https://oneuptime.com/blog/post/2026-02-13-bash-parameter-expansion/view	Mastering Bash Parameter Expansion
+61	79	33	1.4	readme	github.com/aashutoshrathi/awesome-bashrc	https://github.com/aashutoshrathi/awesome-bashrc	aashutoshrathi/awesome-bashrc — 🚀 Collection of bash snippets/aliases…
+62	78	18	3.3	curl	blog.petersobot.com	http://blog.petersobot.com/pipes-and-filters	Peter Sobot's Blog - Pipes and Filters
+63	75	24	2.1	curl	bashoneliners.com	https://bashoneliners.com/	Bash One-Liners | bashoneliners.com
+64	75	37	1.0	curl	rtomayko.github.io	http://rtomayko.github.io/shocco/	shocco.sh
+65	74	23	2.2	api	superuser.com	https://superuser.com/questions/284187	How to iterate over lines in a variable in Bash?
+66	74	16	3.6	curl	turbogeek.co.uk	https://turbogeek.co.uk/?p=4876	6 Powerful Linux One-Liners to Skyrocket Your Productivity
+67	73	44	0.7	curl	bashbooster.net	http://www.bashbooster.net/	Bash Booster 0.6
+68	73	18	3.1	readme	github.com/niieani/bash-oo-framework	https://github.com/niieani/bash-oo-framework	niieani/bash-oo-framework — Bash Infinity is a modern standard librar…
+69	73	20	2.6	curl	learnbyexample.github.io	https://learnbyexample.github.io/learn_gnuawk/awk-introduction.html	awk introduction - CLI text processing with GNU awk
+70	72	13	4.5	curl	betterdev.blog	https://betterdev.blog/minimal-safe-bash-script-template/	Minimal safe Bash script template | Better Dev
+71	71	15	3.7	curl	slicker.me	https://slicker.me/linux/productivity_tips.html	Command Line Productivity Tips
+72	70	17	3.1	api	serverfault.com	https://serverfault.com/questions/477503	Check if array is empty in Bash
+73	69	1	68.0	curl	jonlabelle.com	https://jonlabelle.com/snippets/view/markdown/defensive-bash-programming	Defensive BASH Programming
+74	69	33	1.1	curl	oracle.com	http://www.oracle.com/technetwork/articles/dulaney-sed-098420.html	Using the sed Editor in Linux
+75	69	21	2.3	curl	shellcheck.net	http://www.shellcheck.net/about.html	GitHub - koalaman/shellcheck: ShellCheck, a static analysis tool for …
+76	67	57	0.2	curl	misc.flogisoft.com	http://misc.flogisoft.com/bash/tip_colors_and_formatting	bash:tip_colors_and_formatting - FLOZz' MISC
+77	67	19	2.5	curl	omid.dev	https://omid.dev/2024/06/19/advanced-shell-scripting-techniques-automating-complex-tasks-with-bash/	Advanced Shell Scripting Techniques: Automating Complex Tasks with Ba…
+78	65	18	2.6	api	codereview.stackexchange.com	https://codereview.stackexchange.com/questions/134684	Bash script that lowercases files
+79	64	25	1.6	curl	apenwarr.ca	https://apenwarr.ca/log/20110228	Insufficiently known POSIX shell features - apenwarr
+80	64	6	9.7	curl	commandinline.com	https://www.commandinline.com/bash-performance-optimization-avoid-forks-builtins/	Bash Performance Optimization: Avoid Forks and Use Builtins | Command…
+81	63	10	5.3	curl	catern.com	http://catern.com/posts/pipes.html	Simple, Fast, Easy Parallelism in Shell Pipelines
+82	63	18	2.5	curl	perl.com	https://www.perl.com/article/perl-one-liners-part-1/	Perl / Unix One-liner Cage Match, Part 1
+83	61	16	2.8	curl	terminal.guide	https://terminal.guide/linux/commands/xargs-guide	xargs Command Guide - Terminal Guide
+84	60	18	2.3	curl	artificialworlds.net	https://artificialworlds.net/blog/2012/10/17/bash-associative-array-examples	Bash associative array examples - Andy Balaam's Blog
+85	60	10	5.0	readme	github.com/codenameyau/sed-awk-cheatsheet	https://github.com/codenameyau/sed-awk-cheatsheet	codenameyau/sed-awk-cheatsheet — Things you can do with sed and awk
+86	60	25	1.4	wayback	itnext.io	https://itnext.io/increase-developer-productivity-with-unix-bash-command-one-liners-2973bccd7600	Increase Developer Productivity with Unix Bash Command One-Liners | b…
+87	60	23	1.6	wayback	linuxcapable.com	https://linuxcapable.com/bash-wait-command	Bash wait Command with Examples - LinuxCapable
+88	60	26	1.3	curl	redhat.com	https://www.redhat.com/en/blog/one-line-linux-commands	20 one-line Linux commands to add to your toolbox
+89	60	38	0.6	curl	thegeekstuff.com	http://www.thegeekstuff.com/2009/03/15-practical-linux-find-command-examples/	Mommy, I found it! — 15 Practical Linux Find Command Examples
+90	56	10	4.6	curl	gist.github.com/168835	http://gist.github.com/168835	Display git branch in bash prompt · GitHub
+91	56	27	1.1	curl	ostechnix.com	https://ostechnix.com/parse-csv-files-in-bash-scripts/	Parse CSV Files In Bash Scripts In Linux - OSTechNix
+92	56	19	1.9	curl	prithu.dev	https://prithu.dev/posts/unix-pipeline/	The beauty of Unix pipelines
+93	55	7	6.9	curl	rednafi.com	https://rednafi.com/misc/bash-namerefs/	Bash namerefs for dynamic variable referencing | Redowan's Reflections
+94	55	26	1.1	curl	redsymbol.net	http://redsymbol.net/articles/unofficial-bash-strict-mode/	Bash Strict Mode
+95	54	24	1.2	curl	blog.miguelgrinberg.com	https://blog.miguelgrinberg.com/post/date-arithmetic-in-bash	Date Arithmetic in Bash - miguelgrinberg.com
+96	54	14	2.9	curl	inventivehq.com	https://inventivehq.com/blog/what-are-common-cron-job-patterns-backups-maintenance	What Are Common Cron Job Patterns for Backups and Maintenance?
+97	54	22	1.5	curl	zwischenzugs.com	https://zwischenzugs.com/2018/01/21/ten-more-things-i-wish-id-known-about-bash	Ten More Things I Wish I'd Known About bash – zwischenzugs.com
+98	53	21	1.5	curl	pixelbeat.org	http://www.pixelbeat.org/docs/coreutils-gotchas.html	Coreutils Gotchas
+99	52	29	0.8	curl	arachnoid.com	http://arachnoid.com/linux/shell_programming.html#Bash_Version_3	Bash Shell Programming in Linux
+100	52	28	0.9	readme	github.com/matthewreagan/BashSnippets	https://github.com/matthewreagan/BashSnippets	matthewreagan/BashSnippets — Simple bash scripting examples and snipp…
+101	52	14	2.7	curl	jeroenjanssens.com	http://jeroenjanssens.com/2013/09/19/seven-command-line-tools-for-data-science.html	7 Command-Line Tools for Data Science | Jeroen Janssens
+102	52	42	0.2	wayback	ukuug.org	https://www.ukuug.org/events/linux2003/papers/bash_tips/	Power Shell Usage: Bash Tips & Tricks
+103	51	24	1.1	curl	blog.ari.lt	https://blog.ari.lt/b/gnu-bash-script-and-general-code-optimisation-tips	Blog - ari.lt - Gnu bash script and general code optimisation tips
+104	51	9	4.7	curl	wiki.archlinux.org	https://wiki.archlinux.org/title/Bash/Functions	Bash/Functions - ArchWiki
+105	50	12	3.2	curl	anardil.net	https://www.anardil.net/2018/dynamic-shell-scripting.html	Anardil — Dynamic Shell Scripting
+106	50	20	1.5	curl	besthub.dev	https://www.besthub.dev/articles/master-linux-text-processing-find-grep-sed-awk-and-more-f6134f9b8040	Master Linux Text Processing: Find, Grep, Sed, Awk, an… | BestHub
+107	50	31	0.6	curl	hyperpolyglot.org	http://hyperpolyglot.org/unix-shells	Unix Shells: Bash, Fish, Ksh, Tcsh, Zsh - Hyperpolyglot
+108	49	25	1.0	curl	commandlinefu.com	https://www.commandlinefu.com/commands/browse/sort-by-votes/plaintext/25	commandlinefu.com
+109	48	24	1.0	curl	linuxjournal.com	https://www.linuxjournal.com/node/7385	My Favorite bash Tips and Tricks | Linux Journal
+110	48	24	1.0	curl	machaddr.substack.com	https://machaddr.substack.com/p/understanding-sed-and-perl-one-liners	Understanding sed and Perl One-Liners: Versatile Tools for Text Proce…
+111	47	27	0.7	curl	lucasfcosta.com	https://www.lucasfcosta.com/blog/streams-introduction	Your terminal is not a terminal: An Introduction to Streams
+112	46	21	1.2	curl	dave.autonoma.ca	https://dave.autonoma.ca/blog/2019/05/22/typesetting-markdown-part-1/	Typesetting Markdown -- Part 1: Build Script (Dave Jarvis)
+113	46	24	0.9	readme	github.com/bahamas10/bash-style-guide	https://github.com/bahamas10/bash-style-guide	bahamas10/bash-style-guide — A style guide for writing safe, predicta…
+114	45	29	0.6	api	apple.stackexchange.com	https://apple.stackexchange.com/questions/146849	How do I recompile Bash to avoid Shellshock (the remote exploit CVE-2…
+115	45	11	3.1	curl	genius.engineering	https://genius.engineering/faster-and-simpler-with-the-command-line-deep-comparing-two-5gb-json-files-3x-faster-by-ditching-the-code/	Faster and simpler with the command line: deep-comparing two 5GB JSON…
+116	45	6	6.5	curl	redandblack.io	https://redandblack.io/blog/2020/bash-prompt-with-updating-time/	When did I run that command?
+117	44	20	1.2	wayback	baeldung.com	https://www.baeldung.com/linux/processing-commands-in-parallel	Processing Linux Commands in Parallel | Baeldung on Linux
+118	44	20	1.2	curl	bash-my-aws.org	https://bash-my-aws.org/	Bash-my-AWS - CLI Commands for AWS - Bash-my-AWS
+119	44	19	1.3	curl	davidpashley.com	https://www.davidpashley.com/articles/writing-robust-shell-scripts/	Writing Robust Bash Shell Scripts — David Pashley.com
+120	44	20	1.2	readme	github.com/SimonBaeumer/shell-tricks	https://github.com/SimonBaeumer/shell-tricks	SimonBaeumer/shell-tricks — Simple bash tricks which make your life e…
+121	44	10	3.4	curl	loige.co	http://loige.co/extracting-data-from-wikipedia-using-curl-grep-cut-and-other-bash-commands/	Extracting data from Wikipedia using curl, grep, cut and other shell …
+122	43	16	1.7	readme	github.com/jlevy/the-art-of-command-line	https://raw.githubusercontent.com/jlevy/the-art-of-command-line/master/README.md	jlevy/the-art-of-command-line
+123	43	17	1.5	wayback	linuxize.com	https://linuxize.com/post/bash-parameter-expansion/	Bash Parameter Expansion: Defaults, Substrings, and Replacement | Lin…
+124	43	11	2.9	curl	oilshell.org	https://www.oilshell.org/blog/2021/08/xargs.html	An Opinionated Guide to xargs
+125	42	1	41.0	curl	cheat.sh	https://cheat.sh/bash	cheat.sh/bash
+126	42	10	3.2	curl	fizerkhan.com	http://www.fizerkhan.com/blog/posts/What-I-learned-from-other-s-shell-scripts.html	What I learned from other's shell scripts
+127	42	13	2.2	curl	in-ulm.de	https://www.in-ulm.de/~mascheck/bourne/common.html	Characteristical common properties of the Bourne shell
+128	42	6	6.0	curl	josh.works	https://josh.works/shell-script-basics-change-mac-address	Change your MAC address with a shell script · Josh Thompson
+129	42	10	3.2	curl	ketancmaheshwari.github.io	https://ketancmaheshwari.github.io/posts/2020/05/24/SMC18-Data-Challenge-4.html	Running Awk in parallel to process 256M records
+130	41	7	4.9	curl	kau.sh	https://kau.sh/blog/awk-1-oneliner-dollar-explanation/	What does $0=$2 in awk do? learn awk - Kaushik Gopal's Website
+131	40	38	0.1	curl	antonz.org	https://antonz.org/grep-by-example/	Grep by example: Interactive guide
+132	39	7	4.6	curl	exercism.io	https://exercism.io/blog/coding-intentionally-in-bash-grains	Coding Intentionally in Bash Grains
+133	38	15	1.5	api	askubuntu.com	https://askubuntu.com/questions/385528	How to increment a variable in bash?
+134	38	11	2.5	curl	cs.nccu.edu.tw	https://www.cs.nccu.edu.tw/~lien/UNIX/Pipeline/hardcopy.htm	Pipeline
+135	37	10	2.7	curl	adamdrake.com	https://adamdrake.com/command-line-tools-can-be-235x-faster-than-your-hadoop-cluster.html	Command-line Tools can be 235x Faster than your Hadoop Cluster - Adam…
+136	37	10	2.7	curl	alurm.github.io	https://alurm.github.io/blog/2025-08-07-first-class-lists-in-shells.html	More shell tricks: first class lists, jq, and the es shell
+137	37	8	3.6	curl	cuddly-octo-palm-tree.com	https://cuddly-octo-palm-tree.com/posts/2021-10-31-better-bash-functions/	Cuddly, Octo-Palm Tree: Bash functions are better than I thought
+138	36	10	2.6	readme	github.com/pirate/bash-utils	https://github.com/pirate/bash-utils	pirate/bash-utils — A collection of hand-crafted bash scripts for var…
+139	36	18	1.0	curl	julienlargetpiet.tech	https://julienlargetpiet.tech/articles/sed-a-powerfull-mini-language-from-the-70s.html	Sed, a powerfull mini-language from the 70s
+140	36	13	1.8	curl	middlehost.com	https://middlehost.com/knowledgebase/getting-started/bash-script-examples/	Bash Script Examples (Copy-Paste Scripts for Linux) | Middlehost, Inc
+141	35	9	2.9	curl	blog.kellybrazil.com	https://blog.kellybrazil.com/2019/11/26/bringing-the-unix-philosophy-to-the-21st-century/	Bringing the Unix Philosophy to the 21st Century - Brazil's Blog
+142	35	27	0.3	readme	github.com/herbertlindemans/bash-intro-tutorial	https://github.com/herbertlindemans/bash-intro-tutorial	herbertlindemans/bash-intro-tutorial — This repositoy contains all th…
+143	35	15	1.3	wayback	golinuxcloud.com	https://www.golinuxcloud.com/find-exec-multiple-commands-examples-unix/	10 find exec multiple commands examples in Linux/Unix | GoLinuxCloud
+144	35	10	2.5	curl	gregable.com	http://gregable.com/2010/09/why-you-should-know-just-little-awk.html#	Why you should learn just a little Awk - An Awk tutorial by Example -…
+145	35	8	3.4	curl	linuxsimply.com	https://linuxsimply.com/bash-scripting-tutorial/array/read-array/	How to Read into Bash Array [3 Methods]
+146	34	6	4.7	curl	arstechnica.com	https://arstechnica.com/gadgets/2021/08/linux-bsd-command-line-101-using-awk-sed-and-grep-in-the-terminal/	Linux/BSD command line wizardry: Learn to think in sed, awk, and grep…
+147	34	13	1.6	wayback	dolthub.medium.com	https://dolthub.medium.com/version-controlled-data-pipelines-metaflow-dolt-79faf9eabef1	Version Controlled Data Pipelines: Metaflow + Dolt | by DoltHub | Med…
+148	34	7	3.9	readme	github.com/rockymadden/somafm-cli	https://github.com/rockymadden/somafm-cli	rockymadden/somafm-cli — :musical_note: Listen to SomaFM in your term…
+149	33	15	1.2	curl	notes.volution.ro	https://notes.volution.ro/v1/2021/01/notes/502e747f/	The curious case of shell commands, or how "this bug is required by P…
+150	33	16	1.1	curl	shapeshed.com	https://shapeshed.com/jq-json/	JSON on the command line with jq | George Ornbo
+151	33	8	3.1	curl	techearl.com	https://techearl.com/grep-count-unique	Count Unique Matches: grep, sort, uniq -c Explained (2026)
+152	33	14	1.4	curl	thorstenball.com	http://thorstenball.com/blog/2014/11/20/unicorn-unix-magic-tricks/	Thorsten Ball - Unicorn Unix Magic Tricks
+153	32	15	1.1	curl	phoenixnap.com	https://phoenixnap.com/kb/bash-heredoc	Bash HereDoc Tutorial: Syntax, Examples
+154	31	28	0.1	readme	github.com/krother/bash_tutorial	https://github.com/krother/bash_tutorial	krother/bash_tutorial — Exercises for learning the bash command line.
+155	31	12	1.6	readme	github.com/xwmx/bash-boilerplate	https://github.com/xwmx/bash-boilerplate	xwmx/bash-boilerplate — A collection of Bash scripts for creating saf…
+156	31	11	1.8	curl	livefreeordichotomize.com	https://livefreeordichotomize.com/posts/2019-06-04-using-awk-and-r-to-parse-25tb/index.html	Using AWK and R to parse 25tb –
+157	30	11	1.7	curl	jvns.ca	https://jvns.ca/blog/2024/11/29/why-pipes-get-stuck-buffering/	Why pipes sometimes get "stuck": buffering
+158	30	5	5.0	curl	kramkow.ski	https://kramkow.ski/article/2025/06/27/my_lights_run_on_bash.html	My Lights Run on Bash - Tomasz Kramkowski
+159	30	15	1.0	curl	massimo-nazaria.github.io	https://massimo-nazaria.github.io/nlp.html	Natural Language Processing in Bash
+160	29	18	0.6	curl	lopezferrando.com	https://www.lopezferrando.com/30-interesting-shell-commands/	30 interesting commands for the Linux shell – The Diligent Developer
+161	29	24	0.2	curl	refp.se	https://refp.se/articles/your-shell-and-the-lazy-exclamation-mark	A shell exclamation mark is not for yelling. Be lazy. | Filip Roséen …
+162	28	25	0.1	wayback	adamtheautomator.com	https://adamtheautomator.com/bash-find/	How to Find Files with Dozens of Criteria with the Bash Find Command
+163	28	12	1.3	wayback	blog.dhananjaynene.com	http://blog.dhananjaynene.com/2009/03/twitter-http-rest-api-invocation-infrastruture-using-data-pipelines/	Twitter / HTTP / REST API Invocation Infrastruture using data pipelin…
+164	28	6	3.7	curl	discuss.kubernetes.io	https://discuss.kubernetes.io/t/kubectl-tips-and-tricks/192	Kubectl tips and tricks - General Discussions - Discuss Kubernetes
+165	28	24	0.2	readme	github.com/NisreenFarhoud/Bash-Cheatsheet	https://github.com/NisreenFarhoud/Bash-Cheatsheet	NisreenFarhoud/Bash-Cheatsheet
+166	28	8	2.5	curl	simplified.guide	https://www.simplified.guide/bash/getopts-use	How to parse command line options in Bash with getopts
+167	28	17	0.6	curl	sneak.berlin	https://sneak.berlin/20191011/stupid-unix-tricks/	Jeffrey Paul: Stupid Unix Tricks
+168	28	8	2.5	curl	sookocheff.com	https://sookocheff.com/post/bash/parsing-bash-script-arguments-with-shopts/	Parsing bash script options with getopts | Kevin Sookocheff
+169	28	9	2.1	curl	tuzz.tech	https://tuzz.tech/blog/how-bash-completion-works	How Bash completion works - tuzz.tech
+170	27	12	1.2	curl	awklang.org	http://awklang.org	awklang.org – Τhe site for things related to the awk language
+171	27	17	0.6	curl	decal.ocf.berkeley.edu	https://decal.ocf.berkeley.edu/labs/scripting/	Scripting Reference | OCF Sysadmin DeCal
+172	27	11	1.5	wayback	linode.com	https://www.linode.com/docs/guides/advanced-bash-scripting-1/	A Software Engineer's Guide to Advanced Bash Scripting: Part 1 | Lino…
+173	26	5	4.2	curl	blog.brujordet.no	https://blog.brujordet.no/post/bash/debugging_bash_like_a_sire/	Debugging Bash like a Sire // Automate attention
+174	26	6	3.3	curl	blog.plover.com	https://blog.plover.com/Unix/tools.html	The Universe of Discourse : Benchmarking shell pipelines and the Unix…
+175	26	17	0.5	readme	github.com/dylanaraps/writing-a-tui-in-bash	https://github.com/dylanaraps/writing-a-tui-in-bash	dylanaraps/writing-a-tui-in-bash — How to write a TUI in BASH
+176	26	13	1.0	curl	maximullaris.com	https://maximullaris.com/awk_tech_notes.html	AWK technical notes | Volodymyr Gubarkov
+177	26	14	0.9	curl	vegardstikbakke.com	https://www.vegardstikbakke.com/how-do-pipes-work-sigpipe/	How do Unix pipes work? — Vegard Stikbakke
+178	25	8	2.1	curl	alexdelorenzo.dev	https://alexdelorenzo.dev/linux/2020/03/14/pipes	Using Unix Pipes to Improve Chromecast Playback - Alex DeLorenzo
+179	25	10	1.5	curl	atlantic.net	https://www.atlantic.net/dedicated-server-hosting/linux-xargs-command-guide-with-examples.md	Linux xargs Command Guide with Examples
+180	25	10	1.5	curl	codegenes.net	https://www.codegenes.net/blog/how-do-i-pipe-a-file-line-by-line-into-multiple-read-variables/	How to Read a File Line by Line into Multiple Variables in Bash: Fixi…
+181	25	10	1.5	wayback	medium.com	https://medium.com/geekculture/bash-commands-and-tips-for-efficient-scripting-ee6d9b7b4ae4	Bash Commands and Tips for Efficient Scripting | by Ink Insight | Gee…
+182	24	19	0.3	curl	freecodecamp.org	https://www.freecodecamp.org/news/shell-scripting-crash-course-how-to-write-bash-scripts-in-linux/	Shell Scripting for Beginners – How to Write Bash Scripts in Linux
+183	24	12	1.0	curl	lihaoyi.com	https://www.lihaoyi.com/post/BuildyourownCommandLinewithANSIescapecodes.html	Build your own Command Line with ANSI escape codes
+184	24	9	1.7	curl	linderud.dev	https://linderud.dev/blog/stream-to-chromecast-with-resolved-vlc-and-bash/	Stream to chromecast with resolved, vlc and bash
+185	24	10	1.4	curl	linuxhandbook.com	https://linuxhandbook.com/replace-string-bash	How to Replace Substring in Bash Natively
+186	24	9	1.7	curl	wiki.gentoo.org	https://wiki.gentoo.org/wiki/Bash	Bash - Gentoo wiki
+187	23	5	3.6	curl	developer.ridgerun.com	https://developer.ridgerun.com/wiki/index.php/Unit_testing_in_Bash	Unit testing in Bash
+188	23	22	0.0	curl	fabiensanglard.net	https://fabiensanglard.net/st/index.html	Exploring Linux command-line space time
+189	23	7	2.3	curl	johannes.truschnigg.info	https://johannes.truschnigg.info/writing/2021-12_colodebug/	COLODEBUG: a simple way to improve bash script debugging
+190	23	6	2.8	curl	shellspec.info	https://shellspec.info/	ShellSpec | BDD unit testing framework for shell scripts (bash, ksh, …
+191	22	16	0.4	curl	cs.princeton.edu	https://www.cs.princeton.edu/courses/archive/spring19/cos333/awk.help	www.cs.princeton.edu/courses/archive/spring19/cos333/awk.help
+192	22	9	1.4	curl	missing.csail.mit.edu	https://missing.csail.mit.edu/2020/shell-tools/	Shell Tools and Scripting · Missing Semester
+193	22	8	1.8	curl	tecadmin.net	https://tecadmin.net/bash-process-substitution/	A Comprehensive Guide to Process Substitution in Bash – TecAdmin
+194	21	6	2.5	curl	educative.io	https://www.educative.io/answers/how-to-parse-json-with-bash	How to parse JSON with Bash
+195	21	8	1.6	wayback	linuxquestions.org	https://www.linuxquestions.org/questions/linux-software-2/argument-list-too-long-why-am-i-getting-this-with-the-find-command-585622/	"argument list too long" - why am I getting this with the find command
+196	21	13	0.6	curl	mitchchn.me	http://www.mitchchn.me/2014/os-x-terminal/	Eight Terminal Utilities Every OS X Command Line User Should Know · m…
+197	21	6	2.5	curl	saveriomiroddi.github.io	https://saveriomiroddi.github.io/Additional-shell-options-for-non-trivial-bash-shell-scripts/	Additional shell options for non-trivial (Bash) shell scripts – Saver…
+198	21	7	2.0	curl	stackharbor.com	https://stackharbor.com/en/knowledge-base/bash-scripting-best-practices/	Bash scripting best practices that survive past Tuesday | Stack Harbor
+199	21	8	1.6	curl	vidarholen.net	https://www.vidarholen.net/contents/blog/?p=865	The curious pitfalls in shell redirections to $((i++)) – Vidar's Blog
+200	20	7	1.9	curl	eli.thegreenplace.net	https://eli.thegreenplace.net/2013/06/11/keeping-persistent-history-in-bash	Keeping persistent history in bash - Eli Bendersky's website
+201	20	5	3.0	readme	github.com/phenonymous/shell-progressbar	https://github.com/phenonymous/shell-progressbar	phenonymous/shell-progressbar
+202	20	5	3.0	wayback	labex.io	https://labex.io/tutorials/linux-how-to-implement-zero-padding-in-bash-scripts-431159	How to Implement Zero Padding in Bash Scripts | LabEx
+203	20	6	2.3	wayback	spencersmolen.medium.com	https://spencersmolen.medium.com/debugging-bash-scripts-with-ps4-f8526a4e557c	Medium
+204	19	11	0.7	curl	dagshub.com	http://dagshub.com/blog/effective-linux-bash-data-scientists/	Effective Linux & Bash for Data Scientists
+205	19	16	0.2	curl	howtogeek.com	https://www.howtogeek.com/44997/how-to-use-bash-history-to-improve-your-command-line-productivity/	How to Use Your Bash History in the Linux or macOS Terminal
+206	19	8	1.4	wayback	linuxconfig.org	https://linuxconfig.org/bash-scripting-vs-shell-scripting	Bash Scripting vs Shell Scripting
+207	19	10	0.9	curl	pilabor.com	https://pilabor.com/blog/2021/03/unix-shell-tricks/	Linux/Unix shell tricks, you might not know... - Tech-Tutorials, Howt…
+208	18	8	1.2	curl	community.unix.com	https://community.unix.com/t/sed-command-to-condense-two-lines-into-one/323994	sed command to condense two lines into one - Shell Programming and Sc…
+209	18	5	2.6	curl	javapeanuts.blogspot.com	https://javapeanuts.blogspot.com/2020/12/functions-as-first-class-citizens-shell.html	Java Peanuts: Functions as first-class citizens: the shell-ish version
+210	18	8	1.2	curl	skybert.net	https://skybert.net/bash/debugging-bash-scripts-on-the-command-line	Debugging BASH scripts on the command line | skybert.net
+211	17	8	1.1	curl	blog.blockingqueue.com	https://blog.blockingqueue.com/yet-another-awk-cheat-sheet	Yet Another AWK Cheat Sheet
+212	17	5	2.4	curl	joeyh.name	http://joeyh.name/blog/entry/typed_pipes_in_every_shell/	typed pipes in every shell
+213	17	7	1.4	curl	putorius.net	https://www.putorius.net/using-trap-to-exit-bash-scripts-cleanly.html	Using Trap to Exit Bash Scripts Cleanly - Putorius
+214	17	8	1.1	curl	trstringer.com	https://trstringer.com/bash-param-expansion/	Common Scenarios with Bash Parameter Expansion | Thomas Stringer
+215	16	13	0.2	curl	arslan.io	https://arslan.io/2019/07/03/how-to-write-idempotent-bash-scripts/	How to write idempotent Bash scripts
+216	16	5	2.2	curl	blog.jpalardy.com	http://blog.jpalardy.com/posts/skip-grep-use-awk/	SKIP grep, use AWK | Jonathan Palardy's Blog
+217	16	8	1.0	curl	computerworld.com	https://www.computerworld.com/article/1593768/unix-tip-favorite-unix-tricks.html	Unix Tip: Favorite Unix Tricks – Computerworld
+218	16	12	0.3	curl	devmanual.gentoo.org	https://devmanual.gentoo.org/tools-reference/bash/index.html	bash — standard shell – Gentoo Development Guide
+219	16	7	1.3	wayback	marck-oemar.medium.com	https://marck-oemar.medium.com/unusual-unit-testing-part-1-bash-scripts-with-bats-55ac78e61491	Unusual Unit testing (part 1) — Bash scripts with Bats | by Marck Oem…
+220	16	11	0.5	curl	notes.kodekloud.com	https://notes.kodekloud.com/docs/Advanced-Bash-Scripting/Refresher/Built-in-Commands	Built in Commands - KodeKloud
+221	16	5	2.2	curl	sandilands.info	https://sandilands.info/sgordon/multimedia-on-linux-command-line	Multimedia on Linux Command Line: wget, PdfTK, ffmpeg, flac, SoX
+222	15	15	0.0	curl	anniecherkaev.com	https://anniecherkaev.com/grep-your-way-to-freedom	grep your way to freedom
+223	15	13	0.2	curl	ii.com	https://www.ii.com/git-bash-is-my-preferred-windows-shell/	ii.com: Git Bash Is My Preferred Windows Shell
+224	15	6	1.5	curl	nochlin.com	https://nochlin.com/blog/6-techniques-i-use-to-create-a-great-user-experience-for-shell-scripts	6 Techniques I Use to Create a Great User Experience for Shell Scripts
+225	15	12	0.2	curl	onextrapixel.com	http://www.onextrapixel.com/2013/10/09/unix-tips-tricks-to-save-you-time-in-terminal/	UNIX Tips & Tricks To Save You Time In Terminal
+226	14	6	1.3	curl	blog.dnmfarrell.com	https://blog.dnmfarrell.com/post/bash-function-names-can-be-almost-anything/	Bash Function Names Can Be Almost Anything
+227	14	6	1.3	curl	devopscube.com	https://devopscube.com/linux-command-line-tips-beginners	Linux Command Line Tips for Increasing Productivity for Beginners
+228	14	8	0.8	curl	xeiaso.net	https://xeiaso.net/notes/2024/bash-hashmap/	Today I learned that bash has hashmaps - Xe Iaso
+229	13	6	1.2	curl	datagubbe.se	https://www.datagubbe.se/cutvawk/	cut vs. awk | datagubbe.se
+230	13	9	0.4	readme	github.com/caquino/redis-bash	https://github.com/caquino/redis-bash	caquino/redis-bash — REDIS-BASH - Bash library to access Redis
+231	13	7	0.9	curl	itslinuxfoss.com	https://itslinuxfoss.com/?p=32922	How to Parse JSON With Shell Scripting in Linux? – Its Linux FOSS
+232	13	7	0.9	curl	jol.dev	https://jol.dev/blog/2021-11-16-n2-sed-challenge-join-cal-y-months-into-a-single-column.html	JoL Blog - n.2 - Sed challenge: join cal -y months into a single colu…
+233	13	5	1.6	curl	linux-magazine.com	https://www.linux-magazine.com/Issues/2025/292/Advanced-Shell-Scripting	On Script » Linux Magazine
+234	13	6	1.2	curl	nishantjosh.dev	https://nishantjosh.dev/blogs/reclaim-the-terminal/	Reclaim the terminal · Nishant Joshi
+235	12	12	0.0	curl	0xfe.blogspot.com	http://0xfe.blogspot.com/2006/03/using-spotlight-from-os-x-commandline.html	mo.town blog: Using Spotlight from the OS X Commandline
+236	12	12	0.0	curl	davidbaumgold.com	http://www.davidbaumgold.com/tutorials/command-line/	Getting to Know the Command Line | David Baumgold
+237	12	6	1.0	curl	itsfoss.com	https://itsfoss.com/bash-strings.md	Chapter #6: Handling String Operations
+238	12	10	0.2	curl	markhneedham.com	https://www.markhneedham.com/blog/2012/09/19/finding-ways-to-use-bash-command-line-history-shortcuts/	Finding ways to use bash command line history shortcuts | Mark Needham
+239	12	5	1.4	curl	namehero.com	https://www.namehero.com/blog/bash-debug-mode-set-x-and-the-ps4-variable/	Bash Debug Mode: set -x and the PS4 Variable
+240	12	12	0.0	curl	r-bloggers.com	https://www.r-bloggers.com/2024/11/mastering-linux-a-beginners-guide-to-customizing-the-bash-prompt/	Mastering Linux: A Beginner’s Guide to Customizing the Bash Prompt | …
+241	12	12	0.0	curl	raymii.org	https://raymii.org/s/software/Bash_HTTP_Monitoring_Dashboard.html	Bash HTTP monitoring dashboard - Raymii.org
+242	12	11	0.1	curl	timvisee.com	https://timvisee.com/blog/elegant-bash-conditionals/	Elegant bash conditionals · Tim Visée
+243	11	9	0.2	curl	blog.sanctum.geek.nz	https://blog.sanctum.geek.nz/cron-best-practices/	Cron best practices | Arabesque
+244	11	5	1.2	curl	eriwen.com	http://eriwen.com/tools/grep-is-a-beautiful-tool/	grep is a beautiful tool
+245	11	7	0.6	curl	ferd.ca	https://ferd.ca/awk-in-20-minutes.html	Awk in 20 Minutes
+246	11	9	0.2	curl	maketecheasier.com	https://maketecheasier.com/making-the-linux-command-line-a-little-friendlier/	What Is .bashrc and How to Customize It - Make Tech Easier
+247	11	4	1.8	curl	pbrisbin.com	https://pbrisbin.com/posts/mocking_bash/	Mocking Bash | pbrisbin dot com
+248	11	7	0.6	curl	themythicalengineer.com	https://themythicalengineer.com/setup-aws-cloudwatch-monitoring-and-alarms.html	AWS Cloudwatch Monitoring & Alerts using Bash Scripts | The Mythical …
+249	10	6	0.7	curl	blog.hofstede.it	https://blog.hofstede.it/shell-tricks-that-actually-make-life-easier-and-save-your-sanity/	Shell Tricks That Actually Make Life Easier (And Save Your Sanity) | …
+250	10	6	0.7	curl	cfenollosa.com	http://cfenollosa.com/misc/tricks.txt	cfenollosa.com/misc/tricks.txt

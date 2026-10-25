@@ -1,0 +1,1 @@
+{"session_id":"fixture","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"bash <<'EOF'\necho outer\ncat <<EOF\ninner\nEOF\n","description":"rule a: nested opener with the same terminator"}}

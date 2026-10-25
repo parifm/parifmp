@@ -1,0 +1,1 @@
+{"session_id":"fixture","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git commit -m \"$(cat <<'EOF'\nfix: don't drop the last line\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\" && git commit --allow-empty -m \"$(cat <<'EOF'\nsecond: it's empty\nEOF\n)\"","description":"pass: the usual commit-message heredoc inside \"$(...)\", twice"}}
