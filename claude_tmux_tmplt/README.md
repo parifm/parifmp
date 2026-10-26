@@ -146,6 +146,7 @@ Restore refuses if the tmux session exists or any manifest session is still runn
 | `cos_restore.sh` | rebuild the tmux session after a reboot | owner | by hand, dry run first, then `--go` |
 | `cos_checkin.sh` | per-session status plus FLAG lines | mgr | hourly cron at :07 |
 | `cos_mgrwatch.sh` | checks mgr and its 3 jobs | cos | background |
+| `cos_tmpltdrift.sh` | optional: wakes cos when the live team's core files drift from the last reviewed baseline, for owners who keep a shared copy of the kit | cos | background; `--accept` re-baselines; changes the kit still lacks wait in `drift_pending.txt` |
 | `cos_respawn.sh` | restart an idle session in its pane | cos | on demand |
 | `cos_selfrestart.sh` | cos restarts itself once it's idle and the owner isn't viewing its window | cos | `nohup … &` |
 | `cos_statrep.sh` / `cos_note.sh` | statrep pane / note pane | cos | body on stdin |
@@ -162,6 +163,7 @@ Restore refuses if the tmux session exists or any manifest session is still runn
 - `cos_mgrwatch.sh` (ONCE): healthy against a live team, and it reports all 3 jobs missing against an empty root.
 - `cos_checkin.sh` against live state.
 - `cos_selfrestart.sh` (DRY).
+- `cos_tmpltdrift.sh` (2026-10-26, ONCE, on a scratch team root): no baseline exits 2, `--accept` then clean exits 0, a new persona file exits 1 and is listed, a pending line exits 3 and is listed, a comment-only pending file is clean.
 - `risk-log.sh` logs a `git push` but not an `ls`; `devnull-guard.sh` denies a redirect and allows a plain command.
 
 **Not tested from the kit:**
