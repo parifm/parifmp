@@ -1,7 +1,7 @@
 #!/opt/homebrew/bin/bash
 # cos periodic check-in: one line per cos-launched session, FLAG lines for anything cos should look at.
 # Sessions: names in ~/claude/cos_sessions (one per line, # comments ok).
-# Commitments: ~/claude/cos_watch.tsv  session<TAB>what it owes<TAB>due (YYYY-MM-DD HH:MM local, or -)
+# Commitments: ~/claude/cos_watch.tsv  session<TAB>what it owes<TAB>due (YYYY-MM-DDTHH:MMZ from date -u, or -; YYYY-MM-DD HH:MM local is still read)
 S=${TEAM_ROOT:-$HOME/claude}/cos_sessions W=${TEAM_ROOT:-$HOME/claude}/cos_watch.tsv
 now=$(date +%s)
 [ -f "$S" ] || { echo "FLAG no $S"; exit 1; }
@@ -20,7 +20,8 @@ while read -r n; do
   elif [ -n "$owes" ] && [ "$st" = idle ] && [ -z "$shells" ]; then echo "FLAG $line, idle with nothing running"
   elif [ -n "$owes" ]; then
     late=$(awk -F'\t' -v n="$n" '$1 == n && $3 != "-" { print $3 }' "$W" | while read -r d; do
-      e=$(date -j -f '%Y-%m-%d %H:%M' "$d" +%s 2>&1) && [ "$e" -lt "$now" ] && echo "$d"; done | head -1)
+      case $d in *Z) e=$(date -j -u -f '%Y-%m-%dT%H:%MZ' "$d" +%s 2>&1) ;; *) e=$(date -j -f '%Y-%m-%d %H:%M' "$d" +%s 2>&1) ;; esac
+      [ $? -eq 0 ] && [ "$e" -lt "$now" ] && echo "$d"; done | head -1)
     if [ -n "$late" ]; then echo "FLAG $line, past due"; else echo "ok   $line"; fi
   else echo "ok   $line"; fi
 done < "$S"

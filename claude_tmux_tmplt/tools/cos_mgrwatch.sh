@@ -8,6 +8,7 @@ instances() {   # $1 script: running copies, not counting the sweep runner's sub
   local p pp n=0
   for p in $(pgrep -f "^$BASH5 $R/tools/$1\$"); do
     pp=$(ps -o ppid= -p "$p" | tr -d ' ')
+    [ -n "$pp" ] || continue   # exited between pgrep and ps (sweep subshells); ps -p "" printed garbage pids
     [[ $(ps -o args= -p "$pp") == "$BASH5 $R/tools/$1" ]] || n=$((n + 1))
   done
   echo "$n"
@@ -19,7 +20,7 @@ check() {   # prints problems, one per line; empty means healthy
   done
   if [ -z "$pid" ]; then echo "mgr: no registry entry"
   elif [[ $(ps -o args= -p "$pid") != claude* ]]; then echo "mgr: pid $pid is not running claude"; fi
-  for s in cos_tripwire.sh wtchr_sweeps.sh cos_snapshot.sh; do
+  for s in cos_tripwire.sh wtchr_sweeps.sh cos_snapshot.sh board_watch.sh; do
     n=$(instances "$s"); [ "$n" = 1 ] || echo "$s: $n instances"
   done
   if [ -f "$R/restore/last_snapshot" ]; then

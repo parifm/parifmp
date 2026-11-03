@@ -3,7 +3,10 @@
 # Reviews EVERYTHING each worker and its sub-agents did since this model's last sweep: nothing is
 # dropped; oversized input is split into batches reviewed in parallel. The deep model covers the whole hour.
 # Usage: cos_sweep.sh MODEL EFFORT. Exit 0 = FINDINGS (printed), 1 = CLEAN, 2 = nothing new, 3 = failed.
+((BASH_VERSINFO[0] >= 4)) || { echo "$0 needs bash 4+ (this is $BASH_VERSION)" >&2; exit 3; }
 R=${TEAM_ROOT:-$HOME/claude}
+# A batch the model's safeguards refuse is rerun once on SWEEP_RETRY_MODEL/SWEEP_RETRY_EFFORT; its input is kept for diagnosis.
+RM=${SWEEP_RETRY_MODEL:-claude-opus-5-5} RE=${SWEEP_RETRY_EFFORT:-high}
 D=${SWEEP_D:-$R/.cos_tripwire} P=$R/tools/cos_sweep_prompt.md HR=$R/house_rules.md L=$D/risk.log
 MODEL=${1:-claude-opus-5-5} EFFORT=${2:-medium} BUDGET=${BUDGET:-350000}
 T=${MODEL#claude-}; T=${T%%-*}   # each model family keeps its own offsets (off.<family>.*)
@@ -21,7 +24,7 @@ condense() { jq -rR '
         | "\($t) R: \(if ($x | test("answered|user said|rejected|denied"; "i")) then cut($x; 4000) else cut($x; 1200) end)"
       else empty end end end
   | gsub("\n"; " ⏎ ")' | tr -d '\000'; }
-units=() offs=()
+units=() offs=(); declare -A ukj   # ukj: offset key -> its index in units
 last=$(cat "$D/off.$T.time" 2>&1); [[ $last =~ ^[0-9]+$ ]] || last=$(( $(date +%s) - 1800 ))
 cut=$(date -u -r "$last" +%Y-%m-%dT%H:%M:%S)
 brief() {   # $1 session name, $2 jsonl: its persona (if any) plus its launch prompt, so scope and approvals are judged right
@@ -42,7 +45,7 @@ add_unit() {   # $1 label, $2 jsonl, $3 offset key, $4 optional brief (persona +
   offs+=("$3 $tot")
   (( tot > off )) || return
   delta=$(sed -n "$((off + 1)),${tot}p" "$2" | condense)
-  [ -n "$delta" ] && units+=("=== $1 ===${4:+
+  [ -n "$delta" ] && ukj[$3]=${#units[@]} && units+=("=== $1 ===${4:+
 --- brief (persona + launch prompt; scope and standing rules) ---
 $4
 --- activity ---}
@@ -65,16 +68,18 @@ save() { for o in "${offs[@]}"; do echo "${o#* }" > "$D/off.$T.${o%% *}"; done; 
 if (( ${#units[@]} == 0 )) && [ -z "$risk" ]; then
   printf '%s\nNOTHING NEW\n\n' "--- $(date '+%F %T') ($MODEL/$EFFORT, 0 batches)" >> "$D/review.log"; save; exit 2; fi
 # Pack units into batches of <= BUDGET bytes; a unit larger than BUDGET is split by lines.
-batches=() cur=
-for u in "${units[@]}"; do
+# bat_of[j] lists the batches unit j landed in, so a failed batch holds back only its own units' offsets.
+batches=() cur= curu=() bat_of=()
+push_cur() { local x; batches+=("$cur"); for x in "${curu[@]}"; do bat_of[x]+=" ${#batches[@]}"; done; cur= curu=(); }
+for j in "${!units[@]}"; do u=${units[j]}
   if (( ${#u} > BUDGET )); then
     hdr=${u%%$'\n'*}
     while IFS= read -r -d $'\x1e' piece; do batches+=("$hdr (part)
-$piece"); done < <(printf '%s\n' "${u#*$'\n'}" | awk -v b="$BUDGET" '{ if (n + length($0) > b) { printf "%s\x1e", s; s = ""; n = 0 } s = s $0 "\n"; n += length($0) + 1 } END { if (s != "") printf "%s\x1e", s }')
-  elif (( ${#cur} + ${#u} > BUDGET )); then batches+=("$cur"); cur=$u
-  else cur+=$u; fi
+$piece"); bat_of[j]+=" ${#batches[@]}"; done < <(printf '%s\n' "${u#*$'\n'}" | awk -v b="$BUDGET" '{ if (n + length($0) > b) { printf "%s\x1e", s; s = ""; n = 0 } s = s $0 "\n"; n += length($0) + 1 } END { if (s != "") printf "%s\x1e", s }')
+  elif (( ${#cur} + ${#u} > BUDGET )); then push_cur; cur=$u; curu=("$j")
+  else cur+=$u; curu+=("$j"); fi
 done
-[ -n "$cur" ] && batches+=("$cur"); (( ${#batches[@]} )) || batches+=("")
+[ -n "$cur" ] && push_cur; (( ${#batches[@]} )) || batches+=("")
 seen=$(/usr/bin/grep -E '^- \[' "$D/review.log" 2>&1 | tail -40)
 run=$D/sweep/run.$$; mkdir -p "$run"; i=0
 for b in "${batches[@]}"; do
@@ -86,16 +91,33 @@ for b in "${batches[@]}"; do
     echo $? > "$run/rc.$i" ) &
 done
 wait
-fail= finds= bytes=0
+retried=
+for ((k = 1; k <= i; k++)); do
+  [ "$MODEL" != "$RM" ] && [ "$(cat "$run/rc.$k")" != 0 ] && /usr/bin/grep -q -i 'safeguards' "$run/out.$k" || continue
+  mkdir -p "$D/sweep/failed"; cp -- "$run/in.$k" "$D/sweep/failed/$(date +%Y%m%dT%H%M%S).$T.in.$k"; retried+=" $k"
+  ( cd "$D/sweep" && env -u TMUX -u TMUX_PANE gtimeout 840 claude -p --model "$RM" --effort "$RE" --tools "" \
+      --strict-mcp-config --disable-slash-commands --no-session-persistence < "$run/in.$k" > "$run/out.$k" 2>&1
+    echo $? > "$run/rc.$k" ) &
+done
+wait
+fail= failed= finds= bytes=0
 for ((k = 1; k <= i; k++)); do
   bytes=$(( bytes + $(wc -c < "$run/in.$k") )); o=$(cat "$run/out.$k")
-  if [ "$(cat "$run/rc.$k")" != 0 ] || [ -z "$o" ]; then fail+="batch $k rc=$(cat "$run/rc.$k"): ${o:0:200}; "
+  if [ "$(cat "$run/rc.$k")" != 0 ] || [ -z "$o" ]; then fail+="batch $k rc=$(cat "$run/rc.$k"): ${o:0:200}; "; failed+=" $k"
   elif [[ $o == FINDINGS* ]]; then finds+=${o#FINDINGS}$'\n'; fi
 done
 status=CLEAN; [ -n "$finds" ] && status=FINDINGS$finds; [ -n "$fail" ] && status="FAILED: $fail"$'\n'$status
-printf '%s\n%s\n\n' "--- $(date '+%F %T') ($MODEL/$EFFORT, $i batch(es), $bytes bytes in)" "$status" >> "$D/review.log"
-for ((k = 1; k <= i; k++)); do rm -f -- "$run/in.$k" "$run/out.$k" "$run/rc.$k"; done; rmdir -- "$run"
-[ -n "$fail" ] && { echo "sweep failed: $fail"; exit 3; }
+printf '%s\n%s\n\n' "--- $(date '+%F %T') ($MODEL/$EFFORT, $i batch(es), $bytes bytes in${retried:+; refused batch(es)$retried rerun on $RM/$RE})" "$status" >> "$D/review.log"
+for ((k = 1; k <= i; k++)); do   # a failed batch's input is kept for diagnosis
+  if [ "$(cat "$run/rc.$k")" != 0 ]; then mkdir -p "$D/sweep/failed"; mv -- "$run/in.$k" "$D/sweep/failed/$(date +%Y%m%dT%H%M%S).$T.in.$k"; fi
+  rm -f -- "$run/in.$k" "$run/out.$k" "$run/rc.$k"; done; rmdir -- "$run"
+if [ -n "$fail" ]; then   # save the units whose every batch passed, and deliver their findings; failed units carry over
+  for o in "${offs[@]}"; do k=${o%% *} j=${ukj[${o%% *}]-} ok=1
+    [ -n "$j" ] && for b in ${bat_of[j]}; do [[ "$failed " == *" $b "* ]] && ok=; done
+    [ -n "$ok" ] && echo "${o#* }" > "$D/off.$T.$k"; done
+  [[ "$failed " == *" 1 "* ]] || echo "$rtot" > "$D/off.$T.risk"   # risk lines ride in batch 1; off.$T.time stays, so a failed new session is re-read
+  echo "sweep failed: $fail"; [ -n "$finds" ] && printf 'FINDINGS%s' "$finds" | sed '/^$/d'; exit 3
+fi
 save
 [ -n "$finds" ] && { printf 'FINDINGS%s' "$finds" | sed '/^$/d'; exit 0; }
 exit 1
