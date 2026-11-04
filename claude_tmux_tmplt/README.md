@@ -81,7 +81,7 @@ ask ──► persona + brief ──► launch ───────────
 |---|---|
 | Persona | `personas/<name>.md` (role, standards, how to work with the owner), passed with `--append-system-prompt-file`. The owner reviews it before launch. |
 | Brief | Built from `personas/BRIEF_TEMPLATE.md`: the ask verbatim, what cos added, done means, binding rules, shared state, watching, parallelism. Sent as the launch prompt or by SendMessage, because long tmux pastes lose their start. |
-| Launch | `claude -n <name> --model <m> --effort <e> --append-system-prompt-file personas/<name>.md --settings tools/oversight_plugin/settings.json "<brief>"`, started from `$TEAM_ROOT`, since Claude Code's memory is keyed to the launch folder. |
+| Launch | `claude -n <name> --model <m> --effort <e> --append-system-prompt-file personas/<name>.md --append-system-prompt "$(cat house_rules.md)" --settings tools/oversight_plugin/settings.json "<brief>"`, started from `$TEAM_ROOT`, since Claude Code's memory is keyed to the launch folder. The house rules ride in the system prompt because that survives `/compact`; a SessionStart hook's output is capped at 10 KB. |
 | Register | cos adds the session to `cos_sessions`; mgr adds each commitment, read from a board line or the brief, to `cos_watch.tsv` as `session<TAB>what it owes<TAB>due` (due as `YYYY-MM-DDTHH:MMZ` from `date -u`). |
 | Restart | `tools/cos_respawn.sh <name> <model> <effort> [persona] [settings]` restarts an idle session: `respawn-pane` with `--resume` and `--system-prompt-snapshot off`, keeping the conversation in a fresh process. `tools/cos_selfrestart.sh` does the same for cos. |
 | Close | cos verifies the headline claim, the window closes, and cos removes the session from `cos_sessions`. |

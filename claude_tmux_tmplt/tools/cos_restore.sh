@@ -56,6 +56,7 @@ cmd_for() {   # fields of a manifest row -> the pane's command ("" = plain shell
   [ -n "$m" ] && a+=(--model "$m"); [ -n "$e" ] && a+=(--effort "$e")
   a+=(--system-prompt-snapshot off)
   [ -n "$p" ] && a+=(--append-system-prompt-file "$p"); [ -n "$s" ] && a+=(--settings "$s")
+  a+=(--append-system-prompt "$(cat "$TR/house_rules.md")")   # house rules ride in the system prompt
   a+=("$(prompt "$name")")
   printf 'cd %q && exec' "$cwd"; printf ' %q' "${a[@]}"
 }

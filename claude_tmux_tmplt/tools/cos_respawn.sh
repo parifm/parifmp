@@ -12,6 +12,9 @@ read -r sid st pane < <(jq -r '[.sessionId, .status, (.tmux // "" | sub(".*[.]";
 [ -n "$pane" ] || { echo "$n: no tmux pane" >&2; exit 1; }
 cmd="cd $(printf '%q' "$R") && exec claude --resume $sid -n $n --model $m --effort $e --system-prompt-snapshot off"
 [ -n "$persona" ] && cmd="$cmd --append-system-prompt-file $persona"
+# House rules go into the system prompt (they survive /compact), read from the file at launch.
+[ -f "$R/house_rules.md" ] || { echo "$n: $R/house_rules.md missing; not restarting" >&2; exit 1; }
+cmd="$cmd --append-system-prompt \"\$(cat $(printf '%q' "$R/house_rules.md"))\""
 # Lab/spending workers: attach personas/<name>.settings.json when it exists. An explicit settings file replaces it.
 # With neither, every session gets the oversight plugin's settings. A worker's own settings file must carry
 # {"env":{"CLAUDE_CODE_PLUGIN_DIRS":…}} too.

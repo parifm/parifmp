@@ -22,7 +22,8 @@ prompt="cos: you restarted yourself at $(date +%H:%M) for $why. Your background 
 2. Run CronList; re-create only what is missing.
 Say nothing to the owner unless something failed."
 cmd=(claude --resume "$SID" -n cos --model "$m" --effort "$e" --system-prompt-snapshot off
-     --append-system-prompt-file "$R/personas/cos.md" --settings "$R/tools/oversight_plugin/settings.json" "$prompt")
+     --append-system-prompt-file "$R/personas/cos.md" --append-system-prompt "$(cat "$R/house_rules.md")"
+     --settings "$R/tools/oversight_plugin/settings.json" "$prompt")
 line="cd $(printf '%q' "$R") && exec$(printf ' %q' "${cmd[@]}")"
 [ -n "$DRY" ] && { printf '%s\n' "$line"; exit 0; }
 for ((i = 1; i <= TRIES; i++)); do
