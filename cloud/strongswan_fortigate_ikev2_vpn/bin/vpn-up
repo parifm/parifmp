@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Restart charon under systemd (NOT `ipsec restart`, which spawns a starter
+# outside systemd that dies with the session and leaves the unit inactive).
+set -euo pipefail
+sudo systemctl restart strongswan-starter
+sleep 2
+sudo ipsec up fortinet-vpn
+sudo ipsec statusall fortinet-vpn

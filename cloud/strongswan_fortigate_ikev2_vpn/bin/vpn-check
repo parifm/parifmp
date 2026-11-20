@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+sudo ipsec statusall fortinet-vpn
+echo "---"
+ip -brief address show | grep -v '^lo' || true

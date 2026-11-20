@@ -1,0 +1,38 @@
+# /etc/systemd/system/vpn-bypass-rules.service
+#
+# Two static network changes that the FortiGate tunnel needs. The two are
+# idempotent, so you can restart the unit any number of times.
+# Replace REPLACE_WITH_REMOTE_SUBNET and, if your inner MTU is not 1422, the MSS value.
+#
+# 1. Link-local bypass. strongSwan routes tunneled destinations through table
+#    220 (rule priority 220) with the virtual IP as source. This rule (priority
+#    210) keeps the cloud link-local range (the metadata service and the
+#    resolver) on the main table, also under a 0.0.0.0/0 selector.
+#
+# 2. TCP MSS clamp. The inner MTU of the tunnel is 1422 (a 1500-byte WAN minus
+#    about 78 bytes of NAT-T and ESP), but charon's routes carry no mtu, so the
+#    kernel advertises an MSS from the underlay NIC. A reply segment larger
+#    than about 1382 bytes was then dropped in the tunnel, with no ICMP
+#    frag-needed. Symptom: interactive ssh works, and a command with a screen
+#    of output freezes. The clamp to 1382 (1422 - 20 IP - 20 TCP) makes the far
+#    side build segments that fit.
+#
+#    Not done as `ip route ... mtu 1422` on table 220: charon installs those
+#    routes again on each CHILD_SA rekey.
+#    Not done with `netfilter-persistent save`: that saves the full live rule
+#    set, with charon's dynamic leftfirewall=yes rules.
+
+[Unit]
+Description=FortiGate tunnel fixups (link-local bypass + TCP MSS clamp)
+After=network-online.target
+Wants=network-online.target
+Before=strongswan-starter.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c "ip rule show | grep -q \"to 169.254.0.0/16 lookup main\" || ip rule add to 169.254.0.0/16 lookup main priority 210"
+ExecStart=/bin/sh -c "iptables -t mangle -C OUTPUT -p tcp --tcp-flags SYN,RST SYN -d REPLACE_WITH_REMOTE_SUBNET -j TCPMSS --set-mss 1382 || iptables -t mangle -A OUTPUT -p tcp --tcp-flags SYN,RST SYN -d REPLACE_WITH_REMOTE_SUBNET -j TCPMSS --set-mss 1382"
+
+[Install]
+WantedBy=multi-user.target
