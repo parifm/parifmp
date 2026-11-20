@@ -128,7 +128,7 @@ for p in $(pgrep wekanode); do taskset -cp "$p"; done
 | `kernel.numa_balancing=0` | when `disable_numa_balancing` is set | **no** (same flag path) |
 | CPU governor `performance` | when `cpu_governor=PERFORMANCE` | **no**: `UNCONFIGURED` is the enum default, so it is skipped |
 | Userland busy-polling | yes, with a dedicated core | **no**: the reactor sleeps in epoll when idle |
-| Spin before sleeping | 500 µs when the slot has DPDK NICs | **0 µs**: "a socket backend node will … immediately go to sleep in poll" |
+| Spin before sleeping | 500 µs when the slot has DPDK NICs | **0 µs**: a frontend on the socket backend sleeps in poll at once |
 | Amended 2026-11-20: what the two rows above mean under IO | not measured | **They describe an FE with nothing to do.** The reactor sleeps only when nothing is scheduled. Measured: with one IO in flight at a time, the serving FE's main thread used 64.97 s of CPU in about 66 s, 97% of it in wekanode user code that polls the driver and the network, while WEKA reported 2% for that process (§8.3) |
 | Added 2026-11-20: re-pin after an outside affinity change | the same script reads every slot; not run in DPDK mode | **yes on cgroup v2**, every 60 s, main thread only; no on cgroup v1 or with `cgroups_mode=none` (by source; `none` measured) |
 | Scheduling | SCHED_FIFO when the `ionode_scheduling` override is set | default policy `Legacy`, so nothing is changed. An override would give SCHED_OTHER with nice −5, never FIFO without a dedicated core |
