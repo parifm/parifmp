@@ -8,8 +8,3 @@ Read from the SchedMD/slurm source (master, 2026-09). These notes are the backgr
 - **`TaskPluginParam=SlurmdOffSpec`.** With it, the system cgroup gets the complement of the reserved CPUs, so slurmd stays off them. Without it, the system cgroup gets the reserved CPUs. This is the same on cgroup v1 and v2.
 - **cgroup v2 path.** The system cgroup is `/sys/fs/cgroup/system.slice/<node>_slurmstepd.scope/system/` or `/sys/fs/cgroup/system.slice/slurmstepd.scope/system/` (`src/plugins/cgroup/v2/cgroup_v2.c`). It is not `/sys/fs/cgroup/slurm/system`.
 - **`CoreSpecCount` and `CpuSpecList` together on one node is an error** (`slurm.conf(5)`). `scontrol` shows a `CoreSpecCount` that Slurm derives from the list.
-
-## How to apply
-
-- To reserve CPUs for another pinned service on a compute node, list them in `CpuSpecList` and set `SlurmdOffSpec`.
-- Compare the reserved set with the cpuset that the other service really uses, in OS IDs. Read both from the cgroup files, not from the configuration strings.
