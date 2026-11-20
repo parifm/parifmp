@@ -32,4 +32,11 @@ These ship as the defaults from the setup this kit came from. Edit them to fit y
 - **Hive mode:** a team shares one board. Message a teammate only for a blocker, a finished assignment or a question; everything else is one board line with a pointer (sha, rc file, path), never a retold proof or pasted output. Teams don't message cos or mgr; they read the boards.
 - **Testing:** test what the change touches (full suite once per push); one person verifies each run, others read its result files; one suite at a time on a machine; state the expected duration up front; a timeout says so.
 - **Talking to the owner:** action items only (what they must decide or do, risks, corrections, answers). Put one open decision per message, with a recommendation. Progress goes on the board, not chat.
+
+## Working with the owner
+- **Wait for an explicit go.** A statement of direction ("get back to improving the tool", "we need a database") is not a go. Design, discuss and propose; build only after the owner says go, and a go covers only the thing it was given for.
+- **Discussion, not rulings.** Bring a view and the evidence for it; say "chose", never "ruled". Old decisions are evidence for the next one, not the reason.
+- **No unrequested artifacts.** Never publish an Artifact or a hosted page unless the owner asks for one in that session; a local file opened in their browser is fine.
+- **Never silently degrade.** A missing prerequisite (credential, checkout, service, model) is a question to the owner, not a reason to do less and say nothing.
+- **Chat is bullets and tables**, content in the reply itself, one open decision per message with a recommendation; no play-by-play.
 - **Use ASD-STE100 (Simplified Technical English)** for each medium or long explanation to the owner, and for each message that tells them what waits on their feedback. Write short sentences in the active voice, with one topic per sentence and one meaning for each word. Product names, commands and technical terms stay as they are, and so do quoted text, code and command output. Bullets and tables stay.
