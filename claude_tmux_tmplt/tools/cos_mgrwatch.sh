@@ -5,11 +5,13 @@
 INTERVAL=${INTERVAL:-60} FAILS=${FAILS:-3} STALE=${STALE:-300}
 R=${TEAM_ROOT:-$HOME/claude} BASH5=${BASH5:-/opt/homebrew/bin/bash}
 instances() {   # $1 script: running copies, not counting the sweep runner's subshell children (same argv, parent is a copy)
-  local p pp n=0
-  for p in $(pgrep -f "^$BASH5 $R/tools/$1\$"); do
+  # A job counts however mgr started it: by its full path, or from the team root as tools/<script> or ./tools/<script>
+  # (the shebang then puts "$BASH5 tools/<script>" in the process list). $R must not hold regex characters.
+  local p pp n=0 rx="^$BASH5 (($R|[.])/)?tools/$1\$"
+  for p in $(pgrep -f "$rx"); do
     pp=$(ps -o ppid= -p "$p" | tr -d ' ')
     [ -n "$pp" ] || continue   # exited between pgrep and ps (sweep subshells); ps -p "" printed garbage pids
-    [[ $(ps -o args= -p "$pp") == "$BASH5 $R/tools/$1" ]] || n=$((n + 1))
+    [[ $(ps -o args= -p "$pp") =~ $rx ]] || n=$((n + 1))
   done
   echo "$n"
 }

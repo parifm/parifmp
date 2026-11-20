@@ -3,13 +3,18 @@
 # Reviews EVERYTHING each worker and its sub-agents did since this model's last sweep: nothing is
 # dropped; oversized input is split into batches reviewed in parallel. The deep model covers the whole hour.
 # Usage: cos_sweep.sh MODEL EFFORT. Exit 0 = FINDINGS (printed), 1 = CLEAN, 2 = nothing new, 3 = failed.
+# A batch result must start with FINDINGS or CLEAN; any other first word is a failed batch, never CLEAN, and its
+# units are read again by the next sweep. The CLI's stderr goes to err.<k>, apart from the result (one CLI warning
+# line ahead of FINDINGS once made every result count as CLEAN). The out, err and rc files of the last KEEP runs
+# stay in sweep/keep, listed in sweep/keep/index.
 ((BASH_VERSINFO[0] >= 4)) || { echo "$0 needs bash 4+ (this is $BASH_VERSION)" >&2; exit 3; }
 R=${TEAM_ROOT:-$HOME/claude}
 # A batch the model's safeguards refuse is rerun once on SWEEP_RETRY_MODEL/SWEEP_RETRY_EFFORT; its input is kept for diagnosis.
 RM=${SWEEP_RETRY_MODEL:-claude-opus-5-5} RE=${SWEEP_RETRY_EFFORT:-high}
 D=${SWEEP_D:-$R/.cos_tripwire} P=$R/tools/cos_sweep_prompt.md HR=$R/house_rules.md L=$D/risk.log
-MODEL=${1:-claude-opus-5-5} EFFORT=${2:-medium} BUDGET=${BUDGET:-350000}
+MODEL=${1:-claude-opus-5-5} EFFORT=${2:-medium} BUDGET=${BUDGET:-350000} KEEP=${KEEP:-8}
 T=${MODEL#claude-}; T=${T%%-*}   # each model family keeps its own offsets (off.<family>.*)
+[ -s "$P" ] || { echo "sweep failed: the prompt file $P is missing or empty"; exit 3; }   # before any offset moves
 mkdir -p "$D/sweep"; now0=$(date +%s)
 condense() { jq -rR '
   def cut($x; $n): if ($x | length) > $n then $x[0:($n / 2)] + " … " + $x[-($n / 2):] else $x end;
@@ -66,7 +71,7 @@ roff=$(cat "$D/off.$T.risk" 2>&1); [[ $roff =~ ^[0-9]+$ ]] || roff=0
 risk=; (( rtot > roff )) && risk=$(sed -n "$((roff + 1)),${rtot}p" "$L")
 save() { for o in "${offs[@]}"; do echo "${o#* }" > "$D/off.$T.${o%% *}"; done; echo "$rtot" > "$D/off.$T.risk"; echo "$now0" > "$D/off.$T.time"; }
 if (( ${#units[@]} == 0 )) && [ -z "$risk" ]; then
-  printf '%s\nNOTHING NEW\n\n' "--- $(date '+%F %T') ($MODEL/$EFFORT, 0 batches)" >> "$D/review.log"; save; exit 2; fi
+  printf '%s\nNOTHING NEW\n\n' "--- $(date -u '+%FT%TZ') ($MODEL/$EFFORT, 0 batches)" >> "$D/review.log"; save; exit 2; fi
 # Pack units into batches of <= BUDGET bytes; a unit larger than BUDGET is split by lines.
 # bat_of[j] lists the batches unit j landed in, so a failed batch holds back only its own units' offsets.
 batches=() cur= curu=() bat_of=()
@@ -80,37 +85,53 @@ $piece"); bat_of[j]+=" ${#batches[@]}"; done < <(printf '%s\n' "${u#*$'\n'}" | a
   else cur+=$u; curu+=("$j"); fi
 done
 [ -n "$cur" ] && push_cur; (( ${#batches[@]} )) || batches+=("")
-seen=$(/usr/bin/grep -E '^- \[' "$D/review.log" 2>&1 | tail -40)
+# Earlier findings, as the prompt asks for them ("[session] TYPE: …") and with the "- " some models put first.
+seen=; [ -f "$D/review.log" ] && seen=$(/usr/bin/grep -E '^(- )?\[[^]]+\] (RISK|MISTAKE|RULE|INEFF|FORMAT):' "$D/review.log" | tail -40)
 run=$D/sweep/run.$$; mkdir -p "$run"; i=0
 for b in "${batches[@]}"; do
   i=$((i + 1)); r='(in batch 1)'; [ $i -eq 1 ] && r=${risk:-(none)}
   printf '%s\n\n## House rules (every session is bound by these)\n%s\n\n## Already reported (do not repeat these)\n%s\n\n## Transcript deltas (batch %d of %d)\n%s\n\n## New risk-log lines (time, session, id, tool, command)\n%s\n' \
     "$(cat "$P")" "$(cat "$HR" 2>&1)" "${seen:-(none)}" "$i" "${#batches[@]}" "${b:-(none)}" "$r" > "$run/in.$i"
   ( cd "$D/sweep" && env -u TMUX -u TMUX_PANE gtimeout 840 claude -p --model "$MODEL" --effort "$EFFORT" --tools "" \
-      --strict-mcp-config --disable-slash-commands --no-session-persistence < "$run/in.$i" > "$run/out.$i" 2>&1
+      --strict-mcp-config --disable-slash-commands --no-session-persistence < "$run/in.$i" > "$run/out.$i" 2> "$run/err.$i"
     echo $? > "$run/rc.$i" ) &
 done
 wait
 retried=
 for ((k = 1; k <= i; k++)); do
-  [ "$MODEL" != "$RM" ] && [ "$(cat "$run/rc.$k")" != 0 ] && /usr/bin/grep -q -i 'safeguards' "$run/out.$k" || continue
+  [ "$MODEL" != "$RM" ] && [ "$(cat "$run/rc.$k")" != 0 ] && /usr/bin/grep -q -i 'safeguards' "$run/out.$k" "$run/err.$k" || continue
   mkdir -p "$D/sweep/failed"; cp -- "$run/in.$k" "$D/sweep/failed/$(date +%Y%m%dT%H%M%S).$T.in.$k"; retried+=" $k"
   ( cd "$D/sweep" && env -u TMUX -u TMUX_PANE gtimeout 840 claude -p --model "$RM" --effort "$RE" --tools "" \
-      --strict-mcp-config --disable-slash-commands --no-session-persistence < "$run/in.$k" > "$run/out.$k" 2>&1
+      --strict-mcp-config --disable-slash-commands --no-session-persistence < "$run/in.$k" > "$run/out.$k" 2> "$run/err.$k"
     echo $? > "$run/rc.$k" ) &
 done
 wait
 fail= failed= finds= bytes=0
 for ((k = 1; k <= i; k++)); do
-  bytes=$(( bytes + $(wc -c < "$run/in.$k") )); o=$(cat "$run/out.$k")
-  if [ "$(cat "$run/rc.$k")" != 0 ] || [ -z "$o" ]; then fail+="batch $k rc=$(cat "$run/rc.$k"): ${o:0:200}; "; failed+=" $k"
-  elif [[ $o == FINDINGS* ]]; then finds+=${o#FINDINGS}$'\n'; fi
+  bytes=$(( bytes + $(wc -c < "$run/in.$k") )); o=$(cat "$run/out.$k"); e=$(cat "$run/err.$k" 2>&1)
+  o=${o#"${o%%[![:space:]]*}"}   # blank lines and spaces before the verdict word are not part of it
+  e=${e//$'\n'/ }; (( ${#e} > 300 )) && e="… ${e: -300}"   # the end of stderr, for the FAILED line only
+  h=${o:0:200}; h=${h//$'\n'/ ⏎ }   # one line: a finding line inside a failed result must not read as "already reported"
+  if [ "$(cat "$run/rc.$k")" != 0 ] || [ -z "$o" ]; then fail+="batch $k rc=$(cat "$run/rc.$k"): $h${e:+ | stderr: $e}; "; failed+=" $k"
+  elif [[ $o == FINDINGS* ]]; then finds+=${o#FINDINGS}$'\n'
+  elif [[ $o != CLEAN* ]]; then fail+="batch $k rc=0, result starts with neither FINDINGS nor CLEAN: $h; "; failed+=" $k"; fi
 done
 status=CLEAN; [ -n "$finds" ] && status=FINDINGS$finds; [ -n "$fail" ] && status="FAILED: $fail"$'\n'$status
-printf '%s\n%s\n\n' "--- $(date '+%F %T') ($MODEL/$EFFORT, $i batch(es), $bytes bytes in${retried:+; refused batch(es)$retried rerun on $RM/$RE})" "$status" >> "$D/review.log"
+printf '%s\n%s\n\n' "--- $(date -u '+%FT%TZ') ($MODEL/$EFFORT, $i batch(es), $bytes bytes in${retried:+; refused batch(es)$retried rerun on $RM/$RE})" "$status" >> "$D/review.log"
 for ((k = 1; k <= i; k++)); do   # a failed batch's input is kept for diagnosis
   if [ "$(cat "$run/rc.$k")" != 0 ]; then mkdir -p "$D/sweep/failed"; mv -- "$run/in.$k" "$D/sweep/failed/$(date +%Y%m%dT%H%M%S).$T.in.$k"; fi
-  rm -f -- "$run/in.$k" "$run/out.$k" "$run/rc.$k"; done; rmdir -- "$run"
+  rm -f -- "$run/in.$k"; done
+# Keep this run's out, err and rc files. keep/index holds one line per kept folder (path, tab, batch count);
+# a folder is removed only by its line in that index, file by file, when more than KEEP runs are kept.
+kp=$D/sweep/keep; kd=$kp/$(date -u +%Y%m%dT%H%M%SZ).$T.$$; mkdir -p "$kp"
+if x=$(mv -- "$run" "$kd" 2>&1); then printf '%s\t%s\n' "$kd" "$i" >> "$kp/index"
+else for ((k = 1; k <= i; k++)); do rm -f -- "$run/out.$k" "$run/err.$k" "$run/rc.$k"; done; x=$(rmdir -- "$run" 2>&1); fi
+for ((p = 0; p < 50; p++)); do
+  [ -f "$kp/index" ] && (( $(wc -l < "$kp/index") > KEEP )) || break
+  IFS=$'\t' read -r old n < "$kp/index"; tail -n +2 "$kp/index" > "$kp/index.tmp" && mv -- "$kp/index.tmp" "$kp/index" || break
+  [[ $old == "$kp"/?* && $n =~ ^[0-9]+$ ]] || continue
+  for ((k = 1; k <= n; k++)); do rm -f -- "$old/out.$k" "$old/err.$k" "$old/rc.$k"; done; x=$(rmdir -- "$old" 2>&1)
+done
 if [ -n "$fail" ]; then   # save the units whose every batch passed, and deliver their findings; failed units carry over
   for o in "${offs[@]}"; do k=${o%% *} j=${ukj[${o%% *}]-} ok=1
     [ -n "$j" ] && for b in ${bat_of[j]}; do [[ "$failed " == *" $b "* ]] && ok=; done

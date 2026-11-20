@@ -1,11 +1,14 @@
 #!/opt/homebrew/bin/bash
-# Rebuild tmux session $TMUX_SESSION (default 0) from $TEAM_ROOT/restore/manifest.jsonl after a reboot; run by hand,
+# Rebuild tmux session $TMUX_SESSION (default hq) from $TEAM_ROOT/restore/manifest.jsonl after a reboot; run by hand,
 # no auto-start. Usage: cos_restore.sh [--go] [--manifest FILE] [--skip name,name]
-# Without --go it only prints the plan. Refuses if the tmux session exists or any session in the manifest is running.
+# Without --go it only prints the plan. Exits 0 if the tmux session is already running (so an alias can be
+# "cos_restore.sh --go && tmux attach -t hq"); refuses if any session in the manifest is running.
+# Window and pane numbers come from tmux, so base-index and pane-base-index can be 0 or 1. A relative persona or
+# settings path in the manifest is read from the session's launch folder, wherever you run this script.
 # Each Claude pane resumes its conversation with the flags it last ran with, plus a post-reboot prompt.
 # --manifest also takes an older tab-separated .tsv manifest.
 TR=${TEAM_ROOT:-$HOME/claude}
-R=${RESTORE_D:-$TR/restore} S=${TMUX_SESSION:-0}
+R=${RESTORE_D:-$TR/restore} S=${TMUX_SESSION:-hq}
 go= man=$R/manifest.jsonl skip=,
 while (( $# )); do
   case $1 in
@@ -14,6 +17,9 @@ while (( $# )); do
   esac; shift
 done
 T=(tmux); [ -n "$TMUX_SOCKET" ] && T=(tmux -L "$TMUX_SOCKET")   # TMUX_SOCKET: rehearse on a separate tmux server
+if out=$("${T[@]}" has-session -t "=$S" 2>&1); then   # already up: nothing to do
+  echo "tmux session $S is already running; nothing to restore."; exit 0
+fi
 [ -f "$man" ] || { echo "no manifest at $man"; exit 1; }
 when=$(cat "$R/last_snapshot" 2>&1)
 rows() {   # one line per pane, fields joined by \037 (tab is IFS whitespace and would collapse empty fields), sorted by window, pane
@@ -26,7 +32,6 @@ rows() {   # one line per pane, fields joined by \037 (tab is IFS whitespace and
 all=$(rows) || { echo "manifest $man is not valid; try one from $R/history/"; exit 1; }
 [ -n "$all" ] || { echo "manifest $man has no panes"; exit 1; }
 refuse() { if [ -n "$go" ]; then echo "REFUSED: $*"; exit 1; else echo "WOULD REFUSE with --go: $*"; fi; }
-if out=$("${T[@]}" has-session -t "=$S" 2>&1); then refuse "tmux session $S already exists; restore is for an empty tmux."; fi
 live=
 while IFS=$'\037' read -r _ _ _ _ kind name sid _; do
   [ "$kind" = claude ] || continue
@@ -43,13 +48,16 @@ prompt() {   # $1 session name: the post-reboot message it resumes with
   case $1 in
     cos) m+=" Run your On start steps, compare against $man, and give the owner one table: who is back, who is missing, and which labs kept billing while the Mac was down." ;;
     mgr) m+=" Relaunch your background jobs (check pgrep first), run CronList and re-create only what is missing, then run a check-in now." ;;
-    *) m+=" Before acting, check the real state of your work (hosts, files, git, cloud). Don't redo an outward or paid action until you have confirmed it didn't already happen. Relaunch your watchers, then tell cos your state in three lines." ;;
+    *) m+=" Before acting, check the real state of your work (hosts, files, git, cloud). Don't redo an outward or paid action until you have confirmed it didn't already happen. Relaunch your watchers, including the background HANDOFF watcher in your persona or brief if it has one, and check your board for HANDOFF lines to you since the snapshot. Then post your state as one board NOTE." ;;
   esac
   printf '%s' "$m"
 }
 cmd_for() {   # fields of a manifest row -> the pane's command ("" = plain shell)
   local name=$1 sid=$2 cwd=$3 m=$4 e=$5 p=$6 s=$7
   [[ $skip == *",$name,"* ]] && { echo "  skip: $name (--skip), plain shell" >&2; return; }
+  # The snapshot records these paths as the launch line gave them; a relative one belongs to the launch folder.
+  [ -n "$p" ] && [[ $p != /* ]] && p=$cwd/$p
+  [ -n "$s" ] && [[ $s != /* ]] && s=$cwd/$s
   if [ -n "$p" ] && [ ! -f "$p" ]; then echo "  WARN $name: persona $p missing; not resuming it, plain shell" >&2; return; fi
   if [ -n "$s" ] && [ ! -f "$s" ]; then echo "  WARN $name: settings $s missing; resuming without them" >&2; s=; fi
   local -a a=(claude --resume "$sid" -n "$name")
@@ -72,13 +80,19 @@ while IFS=$'\037' read -r w wn lay pi kind name sid cwd m e p s; do
     if [ -z "$prev" ]; then   # tmux 3.8 layouts are JSON; older ones are "csum,WxH,..."
       if [[ $lay == '{'* ]]; then dims=$(jq -r '"\(.L.w)x\(.L.h)"' <<< "$lay"); else dims=${lay#*,}; dims=${dims%%,*}; fi
       run new-session -d -s "$S" -x "${dims%x*}" -y "${dims#*x}" -n "$wn" -c "$cwd" ${c:+"$c"}
-      [ "$w" != 0 ] && run move-window -s "$S:0" -t "$S:$w"
+      # tmux numbers the first window by base-index; ask it, then move the window to the manifest's number.
+      w0=0; [ -n "$go" ] && { w0=$("${T[@]}" list-windows -t "=$S" -F '#{window_index}' | head -1); [[ $w0 =~ ^[0-9]+$ ]] || { echo "FAILED: no window in new session $S"; exit 1; }; }
+      [ "$w" != "$w0" ] && run move-window -s "$S:$w0" -t "$S:$w"
     else run new-window -d -t "$S:$w" -n "$wn" -c "$cwd" ${c:+"$c"}; fi
-    lays+=("$w"$'\t'"$lay"); prev=$w
-  else run split-window -d -t "$S:$w" -c "$cwd" ${c:+"$c"}; fi
-  [ -n "$name" ] && run select-pane -t "$S:$w.$pi" -T "$name"
+    lays+=("$w"$'\t'"$lay"); prev=$w; pp=
+  # Split the pane made just before this one, so panes keep the manifest's order (a split of the active pane reversed them).
+  else run split-window -d -t "${pp:-$S:$w}" -c "$cwd" ${c:+"$c"}; fi
+  # The newest pane has the highest pane id in its window. Dry run: tmux was not asked, so the manifest's number is shown.
+  if [ -n "$go" ]; then pp=$("${T[@]}" list-panes -t "$S:$w" -F '#{pane_id}' | tr -d % | sort -n | tail -1); [[ $pp =~ ^[0-9]+$ ]] || { echo "FAILED: no pane in $S:$w"; exit 1; }; pp=%$pp
+  else pp=$S:$w.$pi; fi
+  [ -n "$name" ] && run select-pane -t "$pp" -T "$name"
 done <<< "$all"
 for x in "${lays[@]}"; do run select-layout -t "$S:${x%%$'\t'*}" "${x#*$'\t'}"; done
 echo "Paid resources keep billing while the Mac is down. Rows in cos_watch.tsv with a \$ figure:"
 if paid=$(/usr/bin/grep -E '\$[0-9]' "$TR/cos_watch.tsv"); then cut -c1-160 <<< "$paid"; else echo "  (none matched '\$<digit>'; cos checks the labs after restore)"; fi
-[ -n "$go" ] && echo "Done. Attach with: tmux attach -t $S"
+if [ -n "$go" ]; then echo "Done. Attach with: tmux attach -t $S"; fi   # an "&&" form here made the dry run exit 1

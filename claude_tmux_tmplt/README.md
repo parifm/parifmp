@@ -18,7 +18,7 @@ Then:
 1. Merge the printed `hooks` block into `~/.claude/settings.json`.
 2. In `personas/cos.md` and `mgr.md`, replace `<OWNER>` and `<OWNER_ROLE_ONE_LINE>`. Review `house_rules.md`.
 3. Test the hooks with `~/.claude/hooks/heredoc-guard-tests/run.sh`.
-4. Run `./start_team.sh`, then `tmux attach -t 0`.
+4. Run `./start_team.sh`, then `tmux attach -t hq`.
 5. Optional, for public repos: list your private names (customers, hosts, internal projects; one per line) in `$TEAM_ROOT/.cos_tripwire/public_patterns.txt`, and add `tools/public_gate.sh` to each public clone's `pre-commit` and `pre-push` hooks (see the script's header).
 
 Set `TEAM_ROOT` before installing to use a folder other than `~/claude`. The oversight plugin's `settings.json`, which every session launches with, passes `TEAM_ROOT` on to the sessions and their hooks.
@@ -40,7 +40,7 @@ bash_tricks/                  bash example catalog by topic, plus our_bugs_bash_
 ## 1. Layout
 
 ```
-tmux session 0
+tmux session hq   (TMUX_SESSION; window numbers follow your tmux base-index)
 ├── win 0  cos        ┌ cos   (chief of staff)  ┐  the two coordinators
 │                     └ mgr   (operations)      ┘  share window 0
 ├── win 1  <project>    <worker>
@@ -67,24 +67,24 @@ cos and mgr message each other only for a few things: from mgr, a session GONE, 
 
 **Worker patterns:** a single worker per window; a **team** of PM, coder, tester and QA (`personas/pm.example.md`, `coder.example.md`, `tester.example.md`, `qa.example.md`; drop the roles you don't need). The PM scopes, reviews and takes the outward actions (push and so on) on the owner's go in its own pane; the coder writes the main code and only commits locally; the tester writes the test tree in its own worktree; QA runs the suites and routes failures. Or a spending worker with a `personas/<name>.settings.json` that the owner attaches at launch.
 
-**Hive mode.** Each team shares `<project>/BOARD.md`, appended only by `tools/board.sh <project> <TYPE> <text…>`, which stamps the UTC time (TYPE: DONE BLOCKED Q RISK PUSHED DECISION NOTE). A teammate gets a message only for a blocker, a finished assignment (a hand-off that starts its next piece of work) or a question; everything else is one board line with a pointer (sha, rc file, path), never pasted output. Teams don't message cos or mgr: cos reads a board when it needs a team's state, and `tools/board_watch.sh` wakes mgr on RISK, PUSHED and BLOCKED lines. Why: every message wakes its receiver, which re-reads its whole context, so status traffic between sessions is the most expensive kind of output.
+**Hive mode.** Each team shares `<project>/BOARD.md`, appended only by `tools/board.sh <project> <TYPE> <text…>`, which stamps the UTC time (TYPE: DONE BLOCKED Q RISK PUSHED DECISION NOTE HANDOFF). Work for another session is a `HANDOFF <to-session> …` line; each team session keeps one background shell on its board that exits, waking it, when a HANDOFF to it lands (the line is in `personas/BRIEF_TEMPLATE.md`). A teammate gets a message only for a blocker, a finished assignment (a hand-off that starts its next piece of work) or a question; everything else is one board line with a pointer (sha, rc file, path), never pasted output. Teams don't message cos or mgr: cos reads a board when it needs a team's state, and `tools/board_watch.sh` wakes mgr on RISK, PUSHED and BLOCKED lines. Why: every message wakes its receiver, which re-reads its whole context, so status traffic between sessions is the most expensive kind of output.
 
 ## 3. Session lifecycle
 
 ```
 ask ──► persona + brief ──► launch ──────────────► register ─────► work ──► restart? ──► close
-        personas/<n>.md      claude -n <n> …        cos_sessions             cos_respawn.sh
-        BRIEF_TEMPLATE.md    + oversight settings   cos_watch.tsv
+        personas/<n>.md      cos_sessrun.sh <n>      cos_sessions             cos_respawn.sh
+        BRIEF_TEMPLATE.md    claude -n <n> … + oversight settings   cos_watch.tsv
 ```
 
 | Step | How |
 |---|---|
 | Persona | `personas/<name>.md` (role, standards, how to work with the owner), passed with `--append-system-prompt-file`. The owner reviews it before launch. |
 | Brief | Built from `personas/BRIEF_TEMPLATE.md`: the ask verbatim, what cos added, done means, binding rules, shared state, watching, parallelism. Sent as the launch prompt or by SendMessage, because long tmux pastes lose their start. |
-| Launch | `claude -n <name> --model <m> --effort <e> --append-system-prompt-file personas/<name>.md --append-system-prompt "$(cat house_rules.md)" --settings tools/oversight_plugin/settings.json "<brief>"`, started from `$TEAM_ROOT`, since Claude Code's memory is keyed to the launch folder. The house rules ride in the system prompt because that survives `/compact`; a SessionStart hook's output is capped at 10 KB. |
+| Launch | `tools/cos_sessrun.sh <name> claude -n <name> --model <m> --effort <e> --append-system-prompt-file personas/<name>.md --append-system-prompt "$(cat house_rules.md)" --settings tools/oversight_plugin/settings.json "<brief>"`, started from `$TEAM_ROOT`, since Claude Code's memory is keyed to the launch folder. The house rules ride in the system prompt because that survives `/compact`; a SessionStart hook's output is capped at 10 KB. The `cos_sessrun.sh` wrapper records the session's end: it removes the name from `cos_sessions` and adds one line to `cos_log.md`, also when the pane or window is closed. |
 | Register | cos adds the session to `cos_sessions`; mgr adds each commitment, read from a board line or the brief, to `cos_watch.tsv` as `session<TAB>what it owes<TAB>due` (due as `YYYY-MM-DDTHH:MMZ` from `date -u`). |
-| Restart | `tools/cos_respawn.sh <name> <model> <effort> [persona] [settings]` restarts an idle session: `respawn-pane` with `--resume` and `--system-prompt-snapshot off`, keeping the conversation in a fresh process. `tools/cos_selfrestart.sh` does the same for cos. |
-| Close | cos verifies the headline claim, the window closes, and cos removes the session from `cos_sessions`. |
+| Restart | `tools/cos_respawn.sh <name> <model> <effort> [persona] [settings]` restarts an idle session (registry status `idle`, or `shell`: idle with a background job): `respawn-pane` with `--resume` and `--system-prompt-snapshot off`, keeping the conversation in a fresh process. The session's background jobs end with the old process, so it relaunches them. `tools/cos_selfrestart.sh` does the same for cos. |
+| Close | cos verifies the headline claim, the window closes, and the wrapper removes the session from `cos_sessions` (cos does it by hand for a session that ran without the wrapper). |
 
 ## 4. Oversight: layers, quietest first
 
@@ -104,10 +104,10 @@ ask ──► persona + brief ──► launch ───────────
 | Oversight plugin | Every 6 main steps it forks the session's own model, with no tools, to look for RISK, MISTAKE, RULE or INEFF | one forked turn per check, mostly cache reads | mgr reads `.oversight/*.json` |
 | Tripwire | A prompt unanswered 5+ min outside the pane being viewed; a busy pane unchanged 15+ min; a vanished session | 0 tokens | mgr (a prompt waits in the worker's pane; it never goes to the owner's chat) |
 | Board watch | A RISK, PUSHED or BLOCKED line on any board, or a board that shrank | 0 tokens | mgr checks the go (RISK), `git ls-remote` and the quoted go (PUSHED), the pane (BLOCKED) |
-| Review sweeps | Every session's transcript delta and its sub-agents, plus risk.log, judged against each session's persona and launch prompt and the house rules (RISK, MISTAKE, RULE, INEFF, FORMAT, public exposure). The regular model runs at :00/:30/:45, the deep model at :15; a batch the deep model's safeguards refuse is rerun once on the retry model. cos is reviewed too | headless `claude -p` only when there's new activity | A RISK wakes mgr at once; other findings wait for :20. mgr routes only a RISK without a go and real mistakes, at most one message per session per hour; RULE, INEFF and FORMAT are logged, and FORMAT-only output never wakes mgr |
+| Review sweeps | Every session's transcript delta and its sub-agents, plus risk.log, judged against each session's persona and launch prompt and the house rules (RISK, MISTAKE, RULE, INEFF, FORMAT, public exposure). The regular model runs at :00/:30/:45, the deep model at :15; a batch the deep model's safeguards refuse is rerun once on the retry model. cos is reviewed too. A batch result must start with FINDINGS or CLEAN: any other start is a failed batch, and the next sweep reads that range again. The last 8 runs' raw results stay in `.cos_tripwire/sweep/keep/` | headless `claude -p` only when there's new activity | A RISK wakes mgr at once; other findings wait for :20. mgr routes only a RISK without a go and real mistakes, at most one message per session per hour; RULE, INEFF and FORMAT are logged, and FORMAT-only output never wakes mgr |
 | Check-in | Sessions owing work while idle, past due, or waiting on a prompt | one wake per hour | mgr reads the board, then nudges or redirects |
 | mgr watch | mgr gone, one of its four jobs not running exactly once, a stale snapshot (3 checks in a row) | 0 tokens | cos |
-| Public gate (optional) | Names from your list, cloud OCIDs, private keys or new private IPs in a commit to a public repo (`tools/public_gate.sh` in pre-commit/pre-push hooks), and after the fact in new public commits (`tools/public_watch.sh`, run by mgr) | 0 tokens | the committer; mgr on a watch hit |
+| Public gate (optional) | Names from your list, cloud OCIDs, private keys or new private IPs in a commit to a public repo (`tools/public_gate.sh` in pre-commit/pre-push hooks), and after the fact in new public commits (`tools/public_watch.sh`, run by mgr) | 0 tokens | the committer; mgr on a watch hit, or when the watch can't reach a repo three times in a row (PUBLIC WATCH BLIND) |
 
 Watchers stay silent unless something is wrong. Don't use looping agent watchers: they wake the coordinator every minute and burn tokens.
 
@@ -143,7 +143,7 @@ after a reboot, by hand:
    tools/cos_restore.sh --go     rebuilds windows, panes and layouts; resumes each Claude with its last
                                  flags plus a post-reboot prompt (cos / mgr / worker variants)
 ```
-Restore refuses if the tmux session exists or any manifest session is still running. Background jobs, crons and ssh loops don't survive a reboot; each role's post-reboot prompt says what to relaunch.
+Restore exits 0 with "already running" if the tmux session exists (so `cos_restore.sh --go && tmux attach -t hq` works as one alias), and refuses if any manifest session is still running. It takes window and pane numbers from tmux, so `base-index` 0 or 1 both work, and it reads a relative persona or settings path from the session's launch folder. Background jobs, crons and ssh loops don't survive a reboot; each role's post-reboot prompt says what to relaunch.
 
 ## 8. Scripts (`tools/`)
 
@@ -158,10 +158,12 @@ Restore refuses if the tmux session exists or any manifest session is still runn
 | `board.sh` | append one stamped line to a team's `BOARD.md` | every team session | `board.sh [-s <session>] <project> <TYPE> <text…>`; exit 2 and nothing written on bad input |
 | `board_watch.sh` | wakes mgr on a RISK, PUSHED or BLOCKED board line, or a shrunk board | mgr | background, launched as `/opt/homebrew/bin/bash …/board_watch.sh` |
 | `public_gate.sh` | blocks a commit or push to a public repo that carries listed names, OCIDs, keys or new private IPs | git hooks | `pre-commit` / `pre-push` in each public clone |
-| `public_watch.sh` | scans new commits in your public repos for the same | mgr | background, `PUBLIC_REPOS="you/repo …"` |
+| `public_watch.sh` | scans new commits in your public repos for the same; also wakes mgr when it can't reach a repo (`FAILS`, default 3 polls) | mgr | background, `PUBLIC_REPOS="you/repo …"` |
 | `review_prompt.md` | a general code-review prompt to fill in and send | anyone | copy, fill the placeholders |
 | `cos_mgrwatch.sh` | checks mgr and its 4 jobs | cos | background |
 | `cos_tmpltdrift.sh` | optional: wakes cos when the live team's core files drift from the last reviewed baseline, for owners who keep a shared copy of the kit | cos | background; `--accept` re-baselines; changes the kit still lacks wait in `drift_pending.txt` |
+| `cos_sessrun.sh` | launch wrapper: records a session's end in `cos_sessions` and `cos_log.md` | every new session's launch line | `cos_sessrun.sh <name> claude -n <name> …` |
+| `owner_said.sh` | prints the UTC stamp and text of the owner's last typed message in a session, for quoting a go | anyone | `owner_said.sh <session> [regex] [count]` |
 | `cos_respawn.sh` | restart an idle session in its pane | cos | on demand |
 | `cos_selfrestart.sh` | cos restarts itself once it's idle and the owner isn't viewing its window | cos | `nohup … &` |
 | `cos_statrep.sh` / `cos_note.sh` | statrep pane / note pane | cos | body on stdin |
@@ -191,9 +193,15 @@ Restore refuses if the tmux session exists or any manifest session is still runn
 - `cos_mgrwatch.sh` (ONCE) on an empty root reports all four jobs missing.
 - `install.sh --go` into a fresh root: 108 new files, including the empty public-gate lists; a rerun keeps all 108.
 
+**Added 2026-11-20 (fixes from a code review of the kit, and the changes on the live team since 11-03), tested on the kit copy. Every test used a scratch home and team root, a stand-in `claude`, and separate tmux servers:**
+- All 25 scripts pass `bash -n` under bash 5; the plugin passes `node --check`; heredoc-guard suite 39 passed, 0 failed.
+- `cos_sweep.sh` (28 checks): a CLI warning on stderr no longer hides FINDINGS; a result that starts with neither FINDINGS nor CLEAN fails the batch, the offsets stay, and the next sweep reads the range again; a failed result adds no "already reported" line; an earlier `[session] TYPE:` finding reaches the next sweep's "Already reported" list; a missing prompt file fails the sweep; `sweep/keep` holds the last `KEEP` runs.
+- tmux scripts (40 checks), with `base-index` and `pane-base-index` at 0 and at 1, and with zsh as tmux's `default-shell`: `start_team.sh`; `cos_snapshot.sh` (a wrong session name writes no `last_snapshot`); `cos_restore.sh` run from another folder with relative persona and settings paths (dry run exits 0, `--go` keeps window numbers and pane order, "already running" exits 0); `cos_note.sh` and `cos_statrep.sh` (the pane stays open until Enter); `cos_respawn.sh` (status `shell` accepted, `busy` refused); `cos_mgrwatch.sh` counts jobs launched as `tools/<script>`, `./tools/<script>` and by full path.
+- Other scripts (36 checks): `public_watch.sh` against local bare repos (an unreachable remote exits with PUBLIC WATCH BLIND after `FAILS` polls; a remote that comes back with a listed name gives PUBLIC HIT; a healthy, unchanged remote stays silent); `cos_sessrun.sh` (clean end, HUP, a restart in the pane, bash 3.2); `owner_said.sh`; `board.sh` HANDOFF and the watcher line; `public_gate.sh` log stamps.
+
 **Not tested from the kit:**
-- `cos_sweep.sh` and `wtchr_sweeps.sh` (they spend model tokens; the originals run live).
-- `cos_tripwire.sh`, `cos_respawn.sh`, `cos_statrep.sh`, `cos_note.sh`, `agent_watch.sh` (only path changes from the live originals).
+- `wtchr_sweeps.sh` (its loop runs on the clock; only two time stamps changed) and `cos_sweep.sh` with a real model (the originals run live).
+- `cos_tripwire.sh`, `agent_watch.sh` (only path changes from the live originals).
 - The oversight plugin with a non-default `TEAM_ROOT` (the default path is the one in live use).
 - A full `start_team.sh` with real Claude sessions.
 - Linux (unsupported).
@@ -203,7 +211,7 @@ Restore refuses if the tmux session exists or any manifest session is still runn
 - **Models:** `SWEEP_MODEL`/`SWEEP_EFFORT`, `SWEEP_DEEP_MODEL`/`SWEEP_DEEP_EFFORT` (sweeps), `SWEEP_RETRY_MODEL`/`SWEEP_RETRY_EFFORT` (rerun of a refused batch), `COS_*`/`MGR_*` (start_team.sh).
 - **Boards:** `BOARD_ROOT` (default `$TEAM_ROOT`), `BOARD_MAX` (line length, default 200). **Public repos:** `PUBLIC_REPOS` for `public_watch.sh`; the lists in `.cos_tripwire/`.
 - **Outward CLIs:** add your own tools' write verbs to the patterns in `hooks/risk-log.sh`.
-- **Root and session:** `TEAM_ROOT` (default `~/claude`), `TMUX_SESSION` (default `0`).
+- **Root and session:** `TEAM_ROOT` (default `~/claude`), `TMUX_SESSION` (default `hq`).
 - **Linux:** not supported as shipped; see the Platform note at the top.
 
 Author: Frank Pari.

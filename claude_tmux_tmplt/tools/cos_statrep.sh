@@ -10,12 +10,13 @@ printf "\n## %s | window %s | session %s\n%s\n" "$(date "+%Y-%m-%d %H:%M %Z")" "
 
 # Reuse the statrep pane if it is open, else split one under the cos pane.
 cos=$(jq -r '.tmux // "" | sub(".*[:.]";"")' "$(/usr/bin/grep -l '"name":"cos"' "$HOME"/.claude/sessions/*.json | head -1)")
-view="clear; cat '$F'; read -r -p '--- press Enter to close ---' _"
+# The pane runs bash by name: tmux gives a one-string command to the owner's default shell, and zsh has no "read -p".
+view=(/opt/homebrew/bin/bash -c 'clear; cat -- "$1"; read -r -p "--- press Enter to close ---" _' statrep "$F")
 p=$(tmux list-panes -a -F '#{pane_id} #{pane_title}' | awk '$2=="statrep"{print $1; exit}')
 if [ -n "$p" ]; then
-  tmux respawn-pane -k -t "$p" "$view"
+  tmux respawn-pane -k -t "$p" "${view[@]}"
 else
-  p=$(tmux split-window -v -d -l 12 -t "${cos:-%0}" -P -F '#{pane_id}' "$view")
+  p=$(tmux split-window -v -d -l 12 -t "${cos:-%0}" -P -F '#{pane_id}' "${view[@]}")
   tmux select-pane -t "$p" -T statrep
 fi
 echo "statrep -> $p"

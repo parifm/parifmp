@@ -30,7 +30,7 @@ h2=$(printf '%s\n' "$added" | grep -n -E "$RX_HARD")
 h3=$(printf '%s\n' "$added" | grep -o -E "$RX_IP" | sort -u | grep -v -x -F -f "$B")
 if [ -n "$h1$h2$h3" ]; then
   {
-    echo "BLOCK $(date '+%F %T') $mode $repo"
+    echo "BLOCK $(date -u '+%FT%TZ') $mode $repo"
     [ -n "$h1" ] && printf 'names:\n%s\n' "$h1"
     [ -n "$h2" ] && printf 'ocid/key:\n%s\n' "$h2"
     [ -n "$h3" ] && printf 'new private IPs:\n%s\n' "$h3"
@@ -38,5 +38,5 @@ if [ -n "$h1$h2$h3" ]; then
   echo "public_gate: BLOCKED. This is a PUBLIC repo and the change carries customer or private data (above). Remove it; synthetic data only. Do not bypass with --no-verify; post a RISK line on your board." >&2
   exit 1
 fi
-echo "PASS $(date '+%F %T') $mode $repo" >> "$L"
+echo "PASS $(date -u '+%FT%TZ') $mode $repo" >> "$L"
 exit 0

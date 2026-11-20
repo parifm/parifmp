@@ -20,10 +20,10 @@ while :; do
     case $rc in
       0) # FORMAT-only output is logged to format.log, never held, so it never wakes mgr
          tgt=$H; printf '%s\n' "$out" | /usr/bin/grep -qE '^(- )?\[[^]]*\] (RISK|MISTAKE|RULE|INEFF):' || tgt=$D/format.log
-         printf 'SWEEP %s/%s at %s (quiet sweeps before it: %d)\n%s\n' "$sm" "$se" "$(date +%H:%M)" "$quiet" "$out" >> "$tgt"; quiet=0
+         printf 'SWEEP %s/%s at %s (quiet sweeps before it: %d)\n%s\n' "$sm" "$se" "$(date -u +%H:%MZ)" "$quiet" "$out" >> "$tgt"; quiet=0
          if printf '%s\n' "$out" | /usr/bin/grep -qE '^(- )?\[[^]]*\] RISK:'; then flush; fi ;;
       1|2) quiet=$(( quiet + 1 )) ;;
-      *) printf 'SWEEP FAILED %s/%s at %s, rc=%s: %s\n' "$sm" "$se" "$(date +%H:%M)" "$rc" "$out"; exit 0 ;;   # whole $out: a partly failed sweep also carries the passing batches' FINDINGS
+      *) printf 'SWEEP FAILED %s/%s at %s, rc=%s: %s\n' "$sm" "$se" "$(date -u +%H:%MZ)" "$rc" "$out"; exit 0 ;;   # whole $out: a partly failed sweep also carries the passing batches' FINDINGS
     esac
   fi
   sleep 30

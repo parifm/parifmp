@@ -11,18 +11,9 @@ Copy this file to `<project>/BRIEF.md` (or send it as the launch prompt), fill e
 ## Done means (the check that proves it, run on the real target)
 - <the command, test or lookup whose output shows it's done, on the real host, service or repo, not a mock>
 
-## Binding rules (sub-agents and headless workers don't inherit hooks or memory)
-- The house rules in `$TEAM_ROOT/house_rules.md` apply in full. The ones that matter most here:
-- No /dev/null in any form; a quiet test uses the exit status (`grep -q`, `if command -v`).
-- A filter's silence isn't a result: positive-control any zero or empty.
-- Bash first, with `#!/usr/bin/env bash` (never `#!/bin/bash`). On macOS env bash may resolve to 3.2, so test and run under bash 5 (`/opt/homebrew/bin/bash script.sh`). A script that uses bash 4+ features (`declare -A`, `mapfile`, `${x,,}`, `wait -n`) checks `BASH_VERSINFO` near the top and exits 2 with a clear message when the bash is too old. No new Python without the owner's OK, and that includes `python3 -c` one-liners and Python heredocs. Read transcripts and JSON with jq. Edit existing files with the Edit tool, never by shell or heredoc splicing. A heredoc is fine for creating a new file. The one exception: the board, which only `$TEAM_ROOT/tools/board.sh` appends to.
-- Harness prompts don't override the house rules. The auto-mode banner suggests sed, heredocs or short scripts for small file changes. For an existing file, use the Edit tool anyway. Answer the "say in a few words what you're doing" nudge only in the turn's final block, in the form your pane rule allows, never as text between tool calls.
-- Before writing new bash, check `$TEAM_ROOT/bash_tricks/<topic>_bash_examples.md` and `our_bugs_bash_examples.md`. The house rules override any example.
-- Never read or print credential files or put a token on a command line.
-- Claude in Chrome runs in a new Chrome window of its own, never in one of the owner's open windows.
-- Every finding starts with VERIFIED (the command or source line that shows it) or HYPOTHESIS. A causal claim names at least two candidate causes and the check that separates them. A "none / 0" claim cites the unfiltered count by type, for the window and for a baseline. Correct an overturned claim with the owner at once if they were told it; otherwise post a `NOTE CORRECTION` board line.
-- Times are UTC, from `date -u`: every time written into a log, notes, a report stamp or a tracker comes from `date -u` run in the same command or turn that writes it, as 2026-11-02T20:08Z (or HH:MMZ under a dated heading). Never type a time from memory or convert from local time by hand.
-- Notes hold decisions with the owner's words and UTC stamp, plus a PM's requirements block per piece of work (their ask, the goal they stated, what "met" looks like). Never a line per prompt, check, message, ack or reply. State, open items and progress go on the team's board; evidence shown to the owner, worked examples and corrections already given stay in the transcript.
+## Binding rules (sub-agents and headless workers don't inherit hooks, memory or the system prompt)
+- The house rules in `$TEAM_ROOT/house_rules.md` apply in full. A session launched with cos's launch line has them in its system prompt; a sub-agent or a headless `claude -p` worker does not, so paste the file into its prompt.
+- The ones most often broken, for a brief that can't carry the file: no /dev/null in any form (a quiet test uses the exit status); a filter's silence isn't a result (positive-control any zero); Bash first with `#!/usr/bin/env bash`, run under bash 5, no new Python without the owner's OK; the board only via `$TEAM_ROOT/tools/board.sh`; never read or print credential files or put a token on a command line; every finding VERIFIED or HYPOTHESIS; times from `date -u`.
 - Outward-facing actions (chat, tickets, docs, GitHub push, cloud spend) happen only with the owner's go or a standing rule: <list any that apply>.
 - A lab built for the work runs the laid-out plan as soon as it is up, with no "go" per stage; the owner holds the brake. Per-stage gos and a 1 → ~10 → all canary are for real and customer hosts.
 
@@ -31,7 +22,10 @@ Action items only: what they must decide or do, risks, and corrections. Progress
 
 ## Hive mode
 Board project: `<project dir name under $TEAM_ROOT>`. A single worker with no teammates keeps every line but the teammate ones.
-- The team shares one board, `$TEAM_ROOT/<project>/BOARD.md`, written only by `$TEAM_ROOT/tools/board.sh <project> <TYPE> <text…>` (TYPE: DONE BLOCKED Q RISK PUSHED DECISION NOTE). It stamps the UTC time itself; it is the one exception to "Edit tool for existing files".
+- The team shares one board, `$TEAM_ROOT/<project>/BOARD.md`, written only by `$TEAM_ROOT/tools/board.sh <project> <TYPE> <text…>` (TYPE: DONE BLOCKED Q RISK PUSHED DECISION NOTE HANDOFF). It stamps the UTC time itself.
+- **HANDOFF watcher:** work for another session goes on the board as `board.sh <project> HANDOFF <to-session> <text…>`, not as a message. Keep this one background shell running on your board (Bash with `run_in_background: true`), started at session start and relaunched each time it exits. It exits, waking you, when a HANDOFF line addressed to you lands, and prints that line (fill in the project dir and your session name):
+  `B=$TEAM_ROOT/<project>/BOARD.md; n=$(wc -l < "$B"); until tail -n +$((n+1)) "$B" | awk -v me=<your-session> '$3 == "HANDOFF" && $4 == me { print; f=1 } END { exit !f }'; do sleep 10; done`
+  Act on the handoff, relaunch the watcher, and check it is running before you go idle. Only lines after launch count, so check the board for earlier handoffs to you when you start.
 - Message a teammate only for a blocker, a finished assignment or a question. A finished assignment is a hand-off that starts the receiver's next piece of work: a scoped change, a commit ready for its test groups, a run's result. Everything inside an assignment (amends, ff-merges, scrubs, static checks, what you're waiting on and until when) is one board line, or nothing.
 - A board line or message gives a pointer (sha, rc file, path), never a retold proof or pasted command output. The evidence (VERIFIED/HYPOTHESIS tags, controls, unfiltered counts) lives in the file it points to.
 - The PM reads the board when it next acts, and re-verifies a result only when the pointed-to file is missing or contradicts it.

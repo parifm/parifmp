@@ -11,6 +11,7 @@ n=$(mktemp "${TMPDIR:-/tmp}/cosnote.XXXXXX")
 printf '## %s | window %s | session %s\n%s\n' "$(date '+%Y-%m-%d %H:%M %Z')" "$win" "${sess:-?}" "$body" | tee -a "$F" > "$n"
 printf '\n' >> "$F"
 h=$(( $(wc -l < "$n") + 3 )); [ "$h" -gt 20 ] && h=20
-p=$(tmux split-window -v -d -l "$h" -t "$t" -P -F '#{pane_id}' "clear; cat '$n'; rm -f '$n'; read -r -p '--- press Enter to close ---' _")
+# The pane runs bash by name: tmux gives a one-string command to the owner's default shell, and zsh has no "read -p".
+p=$(tmux split-window -v -d -l "$h" -t "$t" -P -F '#{pane_id}' /opt/homebrew/bin/bash -c 'clear; cat -- "$1"; rm -f -- "$1"; read -r -p "--- press Enter to close ---" _' cosnote "$n")
 tmux select-pane -t "$p" -T cosNote
 echo "note -> $p (under $t)"

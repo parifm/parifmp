@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # Team board writer (hive mode: teams share one board instead of messaging each other status). Appends one stamped line
 # to $BOARD_ROOT/<project>/BOARD.md, the team's shared state. The script, not the model, appends and stamps the UTC time,
-# so no Read-before-Edit and no typed timestamps. It is the one sanctioned exception to "Edit tool for existing files".
-# Usage: board.sh [-s <session>] <project-dir-name> <TYPE> <text…>   TYPE: DONE BLOCKED Q RISK PUSHED DECISION NOTE
+# so there are no typed timestamps and no partial lines.
+# Usage: board.sh [-s <session>] <project-dir-name> <TYPE> <text…>   TYPE: DONE BLOCKED Q RISK PUSHED DECISION NOTE HANDOFF
+# HANDOFF <to-session> <text…>: work for another session. Every team session keeps one background shell on its board
+# (the watcher line in personas/BRIEF_TEMPLATE.md), so a handoff is seen when it lands, with no polling by the model
+# and no relay through another session.
 # Session: -s, else $CLAUDE_SESSION_NAME, else the registry entry ~/.claude/sessions/$CLAUDE_PID.json (.name).
 # Exit 0 = appended (the line is printed), 2 = bad usage or input; nothing is written on a non-zero exit.
 BOARD_ROOT=${BOARD_ROOT:-${TEAM_ROOT:-$HOME/claude}} MAX=${BOARD_MAX:-200}
-TYPES='DONE BLOCKED Q RISK PUSHED DECISION NOTE'
+TYPES='DONE BLOCKED Q RISK PUSHED DECISION NOTE HANDOFF'
 die() { echo "board.sh: $*" >&2; exit 2; }
 usage="usage: board.sh [-s <session>] <project-dir-name> <TYPE> <text…> (TYPE: $TYPES)"
 
@@ -37,7 +40,7 @@ case " $TYPES " in *" $type "*) ;; *) die "TYPE '$type' is not one of: $TYPES" ;
 nl=$'\n' cr=$'\r'
 [[ $text == *"$nl"* || $text == *"$cr"* ]] && die "text must be one line (give a pointer to a file, never pasted output)"
 [[ $text =~ [^[:space:]] ]] || die "text is empty"
-(( ${#text} <= MAX )) || die "text is ${#text} characters, over $MAX: give a pointer (sha, rc file, path), not the proof"
+(( ${#text} <= MAX )) || die "text is ${#text} characters, $(( ${#text} - MAX )) over the $MAX limit. Don't trim words and retry: write the full text to a file under $BOARD_ROOT/$proj/ and post one line with its path"
 
 f=$BOARD_ROOT/$proj/BOARD.md
 if [ ! -e "$f" ]; then   # noclobber create: if two writers race, only one header lands; the loser's message is kept, not shown
