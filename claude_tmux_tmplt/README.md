@@ -5,6 +5,7 @@
 This kit runs a small team of Claude Code sessions in one tmux session. A chief of staff (**cos**) turns your asks into launched, briefed worker sessions. An operations manager (**mgr**) keeps those workers healthy and honest, verifies what they claim, and gives them direction. Project teams work in **hive mode**: they share one append-only board per project instead of messaging each other status. Watchers, hooks and review sweeps catch mistakes and risky actions, and stay silent unless something is wrong. It is a template of the setup Frank Pari runs day to day, with the owner-specific parts replaced by placeholders.
 
 ## Requirements
+The full list, with what each tool is for, the Claude Code features the kit depends on, and a check to run first, is in [`DEPENDENCIES.md`](DEPENDENCIES.md). In short:
 - macOS, Apple Silicon Homebrew (`/opt/homebrew`): `brew install bash tmux jq coreutils` (coreutils provides `gtimeout`)
 - Claude Code (`claude`) with a plan that covers several concurrent sessions plus headless review sweeps
 - The models named in `tools/wtchr_sweeps.sh` and `start_team.sh`. Change them with the `SWEEP_*`, `COS_*` and `MGR_*` variables.
