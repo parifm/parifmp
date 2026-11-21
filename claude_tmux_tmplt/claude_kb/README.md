@@ -1,6 +1,6 @@
 # claude_kb: the team's memory in Postgres (optional)
 
-Claude Code keeps a project's memory as files under `~/.claude/projects/<project>/memory/`. With many sessions writing there, files get duplicated, overwritten and lost. This part of the kit moves memory into one Postgres table that every session reaches the same way, through one script. Nothing else in the kit needs it: a team works without it, and `install.sh` copies it but turns nothing on.
+Claude Code keeps a project's memory as files under `~/.claude/projects/<project>/memory/`. With many sessions writing there, files get duplicated, overwritten and lost. This part of the kit moves memory into one Postgres table that every session reaches the same way, through one script. No script in the kit needs it, and `install.sh` only copies it. But `house_rules.md` ships with the two kb rules, as the team this kit came from runs it: set the kb up (below), or delete those two lines.
 
 ## What is here
 | File | Purpose |
@@ -20,11 +20,7 @@ Claude Code keeps a project's memory as files under `~/.claude/projects/<project
 2. `kb load` imports the memory files that already exist (`memory/*.md`, `memory/arxiv/*.md`, `notes/*.md` under the team root's Claude Code project folder), then `kb embed`.
 3. Merge the two hooks from the second block that `install.sh` prints into `~/.claude/settings.json`.
 4. Replace the content of the project's `memory/MEMORY.md` with a short pointer page: memories live in the kb, how to recall (`kb search`, `kb ask`, `kb show`), how to save (`kb add`, `kb edit`, `kb retire`).
-5. Add these two lines to `house_rules.md`, under "Secrets and data", and restart the sessions so the rules reach their system prompts:
-   ```
-   - **Memories live in Postgres (db kb) and are reached only through `claude_kb/kb`** (search, ask, show, list, add, edit, retire, backup, prune). Never psql or pg_dump against db kb; the kb-guard hook refuses it.
-   - **Memory is the kb.** Before acting on a project, person or tool, run `claude_kb/kb search <words>` (or `kb ask <question>`) and read what it returns; save anything durable with `kb add`/`kb edit`, never as a file in `memory/` (the memory-guard hook refuses that).
-   ```
+5. `house_rules.md` already carries the two kb rules, under "Secrets and data" ("Memories live in Postgres…" and "Memory is the kb"). They bind every session, and the review sweeps judge against them. **If you don't run the kb, delete those two lines**, or every session breaks a rule it can't keep.
 6. Schedule `kb backup && kb prune` once an hour (cron or a launchd agent). The database is the only copy. `backup` first runs `load` and `embed`, so a memory file that a session still wrote is pulled in; `prune` keeps 48 hourly dumps, then 30 six-hourly, 7 daily, then one per month.
 
 ## Variables

@@ -8,7 +8,7 @@ This kit runs a small team of Claude Code sessions in one tmux session. A chief 
 - macOS, Apple Silicon Homebrew (`/opt/homebrew`): `brew install bash tmux jq coreutils` (coreutils provides `gtimeout`)
 - Claude Code (`claude`) with a plan that covers several concurrent sessions plus headless review sweeps
 - The models named in `tools/wtchr_sweeps.sh` and `start_team.sh`. Change them with the `SWEEP_*`, `COS_*` and `MGR_*` variables.
-- Optional, only for the memory database in `claude_kb/`: PostgreSQL with the pgvector and pg_trgm extensions, `pigz`, and ollama with an embedding model.
+- For the memory database in `claude_kb/`: PostgreSQL with the pgvector and pg_trgm extensions, `pigz`, and ollama with an embedding model.
 
 ## Install
 ```bash
@@ -17,10 +17,10 @@ This kit runs a small team of Claude Code sessions in one tmux session. A chief 
 ```
 Then:
 1. Merge the printed `hooks` block into `~/.claude/settings.json`.
-2. In `personas/cos.md` and `mgr.md`, replace `<OWNER>` and `<OWNER_ROLE_ONE_LINE>`. Review `house_rules.md`.
+2. In `personas/cos.md` and `mgr.md`, replace `<OWNER>` and `<OWNER_ROLE_ONE_LINE>`. Review `house_rules.md`: it ships with two rules for the memory database, so set up `claude_kb/` (its README has the steps) or delete those two lines.
 3. Test the hooks with `~/.claude/hooks/heredoc-guard-tests/run.sh`.
 4. Run `./start_team.sh`, then `tmux attach -t hq`.
-5. Optional: `install.sh` prints two more hook blocks. Block A adds a local date and time line to each prompt. Block B holds the two guards of the memory database; merge it only when you turn that on (`claude_kb/README.md`).
+5. Optional: `install.sh` prints two more hook blocks. Block A adds a local date and time line to each prompt. Block B holds the two guards of the memory database; merge it when you set that up (`claude_kb/README.md`).
 6. Optional, for public repos: list your private names (customers, hosts, internal projects; one per line) in `$TEAM_ROOT/.cos_tripwire/public_patterns.txt`, and add `tools/public_gate.sh` to each public clone's `pre-commit` and `pre-push` hooks (see the script's header).
 
 Set `TEAM_ROOT` before installing to use a folder other than `~/claude`. The oversight plugin's `settings.json`, which every session launches with, passes `TEAM_ROOT` on to the sessions and their hooks.
@@ -175,7 +175,7 @@ Restore exits 0 with "already running" if the tmux session exists (so `cos_resto
 | `agent_watch.sh` | failure-aware watcher for long jobs or sub-agents (stale, timeout, done) | workers | background |
 | `oversight_plugin/` | per-session fork reviewer | every session | `--settings tools/oversight_plugin/settings.json` |
 
-Outside `tools/`: `claude_kb/kb` is the optional memory database (search, ask, show, add, edit, retire, backup, prune), with its own `README.md` and two PreToolUse guards. Nothing uses it until you turn it on.
+Outside `tools/`: `claude_kb/kb` is the optional memory database (search, ask, show, add, edit, retire, backup, prune), with its own `README.md` and two PreToolUse guards. No script uses it, but `house_rules.md` ships with its two rules: set it up, or delete them.
 
 ## 9. What was tested (macOS, bash 5; each block gives its date)
 **2026-10-25, tested on the kit copy against a live team:**

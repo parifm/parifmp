@@ -40,7 +40,7 @@ tree "$K/oversight_plugin" "$R/tools/oversight_plugin"
 tree "$K/personas" "$R/personas"
 tree "$K/bash_tricks" "$R/bash_tricks"
 tree "$K/templates" "$R"
-tree "$K/claude_kb" "$R/claude_kb"   # optional memory database: copied, but nothing is turned on (claude_kb/README.md)
+tree "$K/claude_kb" "$R/claude_kb"   # memory database: copied only; set it up per claude_kb/README.md, or delete the two kb lines in house_rules.md
 put "$K/house_rules.md" "$R/house_rules.md"
 tree "$K/hooks" "$H"
 echo "  files: $added new, $kept kept (existing files are never overwritten)"
@@ -59,7 +59,7 @@ $(jq -n --arg h "$H" '{hooks: {PreToolUse: [
   {matcher: "Bash|mcp__.*", hooks: [{type: "command", command: "\($h)/risk-log.sh"}]},
   {matcher: "Bash", hooks: [{type: "command", command: "\($h)/heredoc-guard.sh"}]},
   {matcher: "Bash|Write|Edit|MultiEdit|NotebookEdit", hooks: [{type: "command", command: "\($h)/devnull-guard.sh"}]}]}}')
-Next 2: replace <OWNER> and <OWNER_ROLE_ONE_LINE> in $R/personas/cos.md and mgr.md, and review $R/house_rules.md.
+Next 2: replace <OWNER> and <OWNER_ROLE_ONE_LINE> in $R/personas/cos.md and mgr.md, and review $R/house_rules.md (it has two kb rules: set up $R/claude_kb per its README, or delete them).
 Next 3: test the hooks: $H/heredoc-guard-tests/run.sh
 Next 4: start the team: $K/start_team.sh
 

@@ -20,6 +20,8 @@ These ship as the defaults from the setup this kit came from. Edit them to fit y
 - Never read or print credential files, and never put a token on a command line.
 - Private or customer data stays in the workspace and in approved tools. Never publish it. Public repos get `tools/public_gate.sh` in their pre-commit and pre-push hooks; never bypass it with `--no-verify`.
 - Claude in Chrome runs in a new Chrome window of its own, never in one of the owner's open windows.
+- **Memories live in Postgres (db kb) and are reached only through `claude_kb/kb`** (search, ask, show, list, add, edit, retire, backup, prune). Never psql or pg_dump against db kb; the kb-guard hook refuses it, so that every session handles memories the same way.
+- **Memory is the kb.** Before acting on a project, customer, person or tool, run `claude_kb/kb search <words>` (or `kb ask <question>`) and read what it returns; save anything durable with `kb add`/`kb edit`, never as a file in `memory/` (the memory-guard hook refuses that).
 
 ## Authority
 - **Outward actions** (chat posts, tickets, docs, GitHub pushes, cloud spend) need the owner's word or a standing rule recorded in `cos_state.md` with its scope and expiry. Local commits are fine.
