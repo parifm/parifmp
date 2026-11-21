@@ -14,7 +14,7 @@ Copy this file to `<project>/BRIEF.md` (or send it as the launch prompt), fill e
 ## Binding rules (sub-agents and headless workers don't inherit hooks, memory or the system prompt)
 - The house rules in `$TEAM_ROOT/house_rules.md` apply in full. A session launched with cos's launch line has them in its system prompt; a sub-agent or a headless `claude -p` worker does not, so paste the file into its prompt.
 - The ones most often broken, for a brief that can't carry the file: no /dev/null in any form (a quiet test uses the exit status); a filter's silence isn't a result (positive-control any zero); Bash first with `#!/usr/bin/env bash`, run under bash 5, no new Python without the owner's OK; the board only via `$TEAM_ROOT/tools/board.sh`; never read or print credential files or put a token on a command line; every finding VERIFIED or HYPOTHESIS; times from `date -u`.
-- Outward-facing actions (chat, tickets, docs, GitHub push, cloud spend) happen only with the owner's go or a standing rule: <list any that apply>.
+- Outward-facing actions (chat, tickets, docs, GitHub push, cloud spend) happen only with the owner's go or a standing rule: <list any that apply>. Show the owner a public post or comment word for word before it goes out, even when the action was approved.
 - A lab built for the work runs the laid-out plan as soon as it is up, with no "go" per stage; the owner holds the brake. Per-stage gos and a 1 → ~10 → all canary are for real and customer hosts.
 
 ## Talking to the owner

@@ -8,6 +8,7 @@ This kit runs a small team of Claude Code sessions in one tmux session. A chief 
 - macOS, Apple Silicon Homebrew (`/opt/homebrew`): `brew install bash tmux jq coreutils` (coreutils provides `gtimeout`)
 - Claude Code (`claude`) with a plan that covers several concurrent sessions plus headless review sweeps
 - The models named in `tools/wtchr_sweeps.sh` and `start_team.sh`. Change them with the `SWEEP_*`, `COS_*` and `MGR_*` variables.
+- Optional, only for the memory database in `claude_kb/`: PostgreSQL with the pgvector and pg_trgm extensions, `pigz`, and ollama with an embedding model.
 
 ## Install
 ```bash
@@ -19,7 +20,8 @@ Then:
 2. In `personas/cos.md` and `mgr.md`, replace `<OWNER>` and `<OWNER_ROLE_ONE_LINE>`. Review `house_rules.md`.
 3. Test the hooks with `~/.claude/hooks/heredoc-guard-tests/run.sh`.
 4. Run `./start_team.sh`, then `tmux attach -t hq`.
-5. Optional, for public repos: list your private names (customers, hosts, internal projects; one per line) in `$TEAM_ROOT/.cos_tripwire/public_patterns.txt`, and add `tools/public_gate.sh` to each public clone's `pre-commit` and `pre-push` hooks (see the script's header).
+5. Optional: `install.sh` prints two more hook blocks. Block A adds a local date and time line to each prompt. Block B holds the two guards of the memory database; merge it only when you turn that on (`claude_kb/README.md`).
+6. Optional, for public repos: list your private names (customers, hosts, internal projects; one per line) in `$TEAM_ROOT/.cos_tripwire/public_patterns.txt`, and add `tools/public_gate.sh` to each public clone's `pre-commit` and `pre-push` hooks (see the script's header).
 
 Set `TEAM_ROOT` before installing to use a folder other than `~/claude`. The oversight plugin's `settings.json`, which every session launches with, passes `TEAM_ROOT` on to the sessions and their hooks.
 
@@ -27,12 +29,15 @@ Set `TEAM_ROOT` before installing to use a folder other than `~/claude`. The ove
 ```
 install.sh, start_team.sh     install; start cos + mgr
 house_rules.md                rules every session follows (edit to taste)
-personas/                     cos.md, mgr.md, BRIEF_TEMPLATE.md, worker / pm / coder / tester / qa examples
+personas/                     cos.md, mgr.md, BRIEF_TEMPLATE.md; examples: worker, pm, coder, tester, qa,
+                              reviewer (blind code reviewer), labWorker (spends money; + its settings example)
 tools/                        the scripts (below) + oversight_plugin/ + cos_sweep_prompt.md + review_prompt.md
 hooks/                        risk-log.sh, heredoc-guard.sh (+ tests), devnull-guard.sh
 templates/                    empty cos_state.md, cos_sessions, cos_watch.tsv, cos_log.md, comms_lab.md,
-                              drift_pending.txt, and .cos_tripwire/ with empty public-gate lists
+                              drift_pending.txt, and .cos_tripwire/ with empty public-gate lists and an
+                              empty fork_score.tsv
 bash_tricks/                  bash example catalog by topic, plus our_bugs_bash_examples.md (traps we hit)
+claude_kb/                    optional: the team's memory in one Postgres table (kb script, schema, two guards)
 ```
 
 ---
@@ -65,7 +70,7 @@ tmux session hq   (TMUX_SESSION; window numbers follow your tmux base-index)
 
 cos and mgr message each other only for a few things: from mgr, a session GONE, a finding about cos, a project that needs a launch, or two failed sweeps; from cos, a new launch or a job change that needs mgr to relaunch something. No acks and no FYIs. The owner's open decisions live in each project, kept by its PM; there is no central list.
 
-**Worker patterns:** a single worker per window; a **team** of PM, coder, tester and QA (`personas/pm.example.md`, `coder.example.md`, `tester.example.md`, `qa.example.md`; drop the roles you don't need). The PM scopes, reviews and takes the outward actions (push and so on) on the owner's go in its own pane; the coder writes the main code and only commits locally; the tester writes the test tree in its own worktree; QA runs the suites and routes failures. Or a spending worker with a `personas/<name>.settings.json` that the owner attaches at launch.
+**Worker patterns:** a single worker per window; a **team** of PM, coder, tester and QA (`personas/pm.example.md`, `coder.example.md`, `tester.example.md`, `qa.example.md`; drop the roles you don't need). The PM scopes, reviews and takes the outward actions (push and so on) on the owner's go in its own pane; the coder writes the main code and only commits locally; the tester writes the test tree in its own worktree; QA runs the suites and routes failures. Or a spending worker with a `personas/<name>.settings.json` that the owner attaches at launch: `personas/labWorker.example.md` is a cloud lab worker with a spend cap, a map of known traps and a trap log that cos keeps, and `personas/labWorker.settings.example.json` is its permission file to fill in. Or a **blind reviewer** (`personas/reviewer.example.md`) beside a team: it reviews each sha from its own clone with clean-room headless workers, reads none of the team's notes until its findings are filed, and then scores itself against the outside reviewers.
 
 **Hive mode.** Each team shares `<project>/BOARD.md`, appended only by `tools/board.sh <project> <TYPE> <text…>`, which stamps the UTC time (TYPE: DONE BLOCKED Q RISK PUSHED DECISION NOTE HANDOFF). Work for another session is a `HANDOFF <to-session> …` line; each team session keeps one background shell on its board that exits, waking it, when a HANDOFF to it lands (the line is in `personas/BRIEF_TEMPLATE.md`). A teammate gets a message only for a blocker, a finished assignment (a hand-off that starts its next piece of work) or a question; everything else is one board line with a pointer (sha, rc file, path), never pasted output. Teams don't message cos or mgr: cos reads a board when it needs a team's state, and `tools/board_watch.sh` wakes mgr on RISK, PUSHED and BLOCKED lines. Why: every message wakes its receiver, which re-reads its whole context, so status traffic between sessions is the most expensive kind of output.
 
@@ -101,7 +106,7 @@ ask ──► persona + brief ──► launch ───────────
 | Layer | Catches | Cost | Who acts |
 |---|---|---|---|
 | Hooks | `devnull-guard.sh` denies output to /dev/null; `heredoc-guard.sh` denies risky heredoc, `rm -r $var` and launchctl patterns; `risk-log.sh` logs outward or destructive calls to `.cos_tripwire/risk.log` | 0 tokens | the session; the sweeps read risk.log |
-| Oversight plugin | Every 6 main steps it forks the session's own model, with no tools, to look for RISK, MISTAKE, RULE or INEFF | one forked turn per check, mostly cache reads | mgr reads `.oversight/*.json` |
+| Oversight plugin | Every 6 main steps it forks the session's own model, with no tools, to look for RISK, MISTAKE, RULE or INEFF | one forked turn per check, mostly cache reads | mgr reads `.oversight/*.json` and scores each concern in `.cos_tripwire/fork_score.tsv` |
 | Tripwire | A prompt unanswered 5+ min outside the pane being viewed; a busy pane unchanged 15+ min; a vanished session | 0 tokens | mgr (a prompt waits in the worker's pane; it never goes to the owner's chat) |
 | Board watch | A RISK, PUSHED or BLOCKED line on any board, or a board that shrank | 0 tokens | mgr checks the go (RISK), `git ls-remote` and the quoted go (PUSHED), the pane (BLOCKED) |
 | Review sweeps | Every session's transcript delta and its sub-agents, plus risk.log, judged against each session's persona and launch prompt and the house rules (RISK, MISTAKE, RULE, INEFF, FORMAT, public exposure). The regular model runs at :00/:30/:45, the deep model at :15; a batch the deep model's safeguards refuse is rerun once on the retry model. cos is reviewed too. A batch result must start with FINDINGS or CLEAN: any other start is a failed batch, and the next sweep reads that range again. The last 8 runs' raw results stay in `.cos_tripwire/sweep/keep/` | headless `claude -p` only when there's new activity | A RISK wakes mgr at once; other findings wait for :20. mgr routes only a RISK without a go and real mistakes, at most one message per session per hour; RULE, INEFF and FORMAT are logged, and FORMAT-only output never wakes mgr |
@@ -170,8 +175,10 @@ Restore exits 0 with "already running" if the tmux session exists (so `cos_resto
 | `agent_watch.sh` | failure-aware watcher for long jobs or sub-agents (stale, timeout, done) | workers | background |
 | `oversight_plugin/` | per-session fork reviewer | every session | `--settings tools/oversight_plugin/settings.json` |
 
-## 9. What was tested (2026-10-25, macOS, bash 5, against a live team)
-**Tested on the kit copy:**
+Outside `tools/`: `claude_kb/kb` is the optional memory database (search, ask, show, add, edit, retire, backup, prune), with its own `README.md` and two PreToolUse guards. Nothing uses it until you turn it on.
+
+## 9. What was tested (macOS, bash 5; each block gives its date)
+**2026-10-25, tested on the kit copy against a live team:**
 - Every script passes `bash -n`; the plugin passes `node --check`.
 - heredoc-guard suite: 39 passed, 0 failed. That is 38 fixtures plus a timing test; one private fixture was dropped from the original 39. The suite prints one `jq: parse error` on stderr, which is expected: `err-malformed-input.json` feeds bad JSON on purpose and passes only when the guard reports it could not check.
 - `install.sh` dry run, `--go` into a fresh root, and a rerun into the same root (0 new, 97 kept; an edited persona stays).
@@ -199,7 +206,15 @@ Restore exits 0 with "already running" if the tmux session exists (so `cos_resto
 - tmux scripts (40 checks), with `base-index` and `pane-base-index` at 0 and at 1, and with zsh as tmux's `default-shell`: `start_team.sh`; `cos_snapshot.sh` (a wrong session name writes no `last_snapshot`); `cos_restore.sh` run from another folder with relative persona and settings paths (dry run exits 0, `--go` keeps window numbers and pane order, "already running" exits 0); `cos_note.sh` and `cos_statrep.sh` (the pane stays open until Enter); `cos_respawn.sh` (status `shell` accepted, `busy` refused); `cos_mgrwatch.sh` counts jobs launched as `tools/<script>`, `./tools/<script>` and by full path.
 - Other scripts (36 checks): `public_watch.sh` against local bare repos (an unreachable remote exits with PUBLIC WATCH BLIND after `FAILS` polls; a remote that comes back with a listed name gives PUBLIC HIT; a healthy, unchanged remote stays silent); `cos_sessrun.sh` (clean end, HUP, a restart in the pane, bash 3.2); `owner_said.sh`; `board.sh` HANDOFF and the watcher line; `public_gate.sh` log stamps.
 
+**Added 2026-11-20, second update (the optional memory database, two example personas, small rules), tested on the kit copy:**
+- All 28 scripts pass `bash -n` under bash 5; the plugin passes `node --check`; heredoc-guard suite 39 passed, 0 failed.
+- `claude_kb/kb` (33 checks) on a separate PostgreSQL 18 server with its own data folder, socket and port, a scratch home and `KB_DB` set: `init` twice; `load` with no files, with three files, and again (no new rows); `list`, `search` by keyword and by fragment, `show`, `history`; `add` (and its refusals), `edit`, `retire` (no row is deleted); `embed` and `ask` with ollama (the right memory ranks first), and `ask` without it (exit 1 with the reason); `backup`, a restore of the dump into a new database, and `prune`.
+- `kb-guard.sh` and `memory-guard.sh` (30 checks), fed PreToolUse JSON with a scratch home: each deny and allow case, `KB_DB`, the `~` spelling of the folder, malformed input (allowed; `jq` prints one parse error on stderr), the deny text names the kit's `kb` path, and each deny is logged.
+- `install.sh`: the dry run; `--go` into a fresh root (119 new files, `claude_kb/` and the new examples among them); a rerun keeps all 119. The three printed hook blocks parse with `jq`.
+
 **Not tested from the kit:**
+- `claude_kb`: an hourly backup job (cron or launchd), another embedding model, and the two guards as live hooks in a session started from the kit.
+- `personas/labWorker.example.md`, `labWorker.settings.example.json` and `reviewer.example.md`: no session was launched from them. They are generic forms of personas in live use. The headless command in the reviewer example was checked against `claude --help` only; canary one worker first, as the persona says.
 - `wtchr_sweeps.sh` (its loop runs on the clock; only two time stamps changed) and `cos_sweep.sh` with a real model (the originals run live).
 - `cos_tripwire.sh`, `agent_watch.sh` (only path changes from the live originals).
 - The oversight plugin with a non-default `TEAM_ROOT` (the default path is the one in live use).

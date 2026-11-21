@@ -1,0 +1,234 @@
+#!/opt/homebrew/bin/bash
+# kb: the team's memories in Postgres (db "kb", one table), searched three ways. The only way in or out.
+# Optional part of the kit: it needs PostgreSQL with the pgvector and pg_trgm extensions, pigz, and ollama with
+# the embedding model below (see claude_kb/README.md). Variables: KB_DB, KB_MEMDIR, KB_MODEL, KB_OLLAMA, TEAM_ROOT.
+#   kb init                    create the db and table (drops nothing)
+#   kb load                    one-time import of memory/*.md, arxiv/*.md, notes/*.md (a changed body = a new row)
+#   kb search <words>          keyword (ranked, with a snippet) + fragment match
+#   kb ask <question>          semantic match by embedding
+#   kb show <stem> [version]   the current body (header: stem, type, date, version count), or an old version
+#   kb history <stem>          every version of a stem, oldest first
+#   kb list [type]             current stems, newest first
+#   kb add <stem> <type> [body]   new memory (stem must be new); body on stdin if omitted
+#   kb edit <stem> [body]         new body; the old row stays as history
+#   kb retire <stem>           mark the current row not current; nothing is deleted
+#   kb embed                   fill missing embeddings (add/edit run it for their row)
+#   kb backup [dir]            pg_dump | pigz to <dir>/kb_<UTC>.sql.gz (default claude_kb/backups); restore by hand
+#   kb prune [dir]             thin backups: 48 hourly, 30 six-hourly, 7 daily, then monthly (UTC grid)
+set -uo pipefail
+DB=${KB_DB:-kb}
+R=${TEAM_ROOT:-$HOME/claude}
+# Claude Code keeps a project's memory under ~/.claude/projects/<launch folder with each non-alphanumeric character as "-">
+MEMDIR=${KB_MEMDIR:-$HOME/.claude/projects/${R//[^A-Za-z0-9]/-}}
+MODEL=${KB_MODEL:-qwen3-embedding:0.6b}   # 1024 dimensions; kb_schema.sql fixes that size
+OLLAMA=${KB_OLLAMA:-http://localhost:11434}
+[[ $DB =~ ^[A-Za-z0-9_]+$ ]] || { echo "kb: KB_DB must be [A-Za-z0-9_]+" >&2; exit 2; }
+HERE=$(cd "$(dirname "$0")" && pwd)
+TMP=${TMPDIR:-/tmp}/kb.$$; mkdir -p "$TMP"; trap 'rm -rf "$TMP"' EXIT
+psqlq() { psql -X -q -v ON_ERROR_STOP=1 -d $DB "$@"; }
+die() { echo "kb: $*" >&2; exit 1; }
+
+cmd_init() {
+  if ! psql -X -At -d postgres -c "select 1 from pg_database where datname='$DB'" | grep -q 1; then createdb $DB || die "createdb failed"; fi
+  psqlq -f "$HERE/kb_schema.sql" || die "schema failed"
+  echo "kb: db $DB ready"
+}
+
+# one JSON object per file: stem, type, body (frontmatter stripped), current
+stage_file() {   # $1 path  $2 current(true|false)  $3 kind(memory|note)
+  local f=$1 cur=$2 kind=$3 stem type
+  stem=$(basename "$f" .md)
+  case "$kind" in
+    note) type=note ;;
+    *) if [[ $stem == hub_* ]]; then type=hub
+       else type=$(awk '/^---$/{c++; next} c==1 && /^ *type:/{sub(/^ *type: */,""); print; exit}' "$f"); fi ;;
+  esac
+  [ -n "$type" ] || type=reference
+  jq -n --arg stem "$stem" --arg type "$type" --arg cur "$cur" --rawfile raw "$f" '
+    {stem:$stem, type:$type, current:($cur=="true"),
+     body:($raw | if startswith("---\n") then (split("\n---\n")[1:] | join("\n---\n")) else . end | sub("^\n+"; ""))}'
+}
+
+cmd_load() {
+  local stage=$TMP/stage.json
+  {
+    for f in "$MEMDIR"/memory/*.md; do [ -e "$f" ] || continue; [ "$(basename "$f")" = MEMORY.md ] && continue; stage_file "$f" true memory; done
+    for f in "$MEMDIR"/memory/arxiv/*.md; do [ -e "$f" ] || continue; [[ $(basename "$f") == MEMORY_index_before_* ]] && continue; stage_file "$f" false memory; done
+    for f in "$MEMDIR"/notes/*.md; do [ -e "$f" ] || continue; stage_file "$f" true note; done
+  } | jq -s . > "$stage"
+  echo "kb: staged $(jq length "$stage") files"
+  psqlq -v f="$stage" <<'SQL' || die "load failed"
+create temp table stage as
+select * from jsonb_to_recordset(pg_read_file(:'f')::jsonb) as x(stem text, type text, body text, current boolean);
+update memory m set current = false
+  from stage s where s.current and m.current and m.stem = s.stem and m.body <> s.body;
+insert into memory (stem, type, body, current)
+select s.stem, s.type, s.body, s.current from stage s
+ where not exists (select 1 from memory m where m.stem = s.stem and m.body = s.body);
+select count(*) filter (where current) as current_rows, count(*) filter (where not current) as history_rows,
+       count(*) filter (where embedding is null) as unembedded from memory;
+SQL
+}
+
+embed_text() {   # stdin: text -> stdout: pgvector literal, or nothing on failure
+  jq -Rs --arg m "$MODEL" '{model:$m, input:.}' | curl -s --max-time 120 "$OLLAMA/api/embed" -d @- | jq -c '.embeddings[0] // empty'
+}
+
+embed_rows() {   # $1: SQL predicate selecting rows to embed
+  local sql=$TMP/embed.sql n=0 id v
+  : > "$sql"
+  psql -X -At -d $DB -c "select id from memory where $1 order by current desc, id" > "$TMP/ids"
+  while read -r id; do
+    [ -n "$id" ] || continue
+    v=$(psql -X -At -d $DB -c "select body from memory where id = $id" | embed_text)
+    [ -n "$v" ] || { echo "kb: embed failed for id $id (is ollama up? brew services start ollama)" >&2; continue; }
+    printf "update memory set embedding = '%s' where id = %s;\n" "$v" "$id" >> "$sql"; n=$((n+1))
+  done < "$TMP/ids"
+  [ $n -gt 0 ] && psqlq -f "$sql"
+  echo "kb: embedded $n rows; $(psql -X -At -d $DB -c 'select count(*) from memory where embedding is null') still null"
+}
+cmd_embed() { embed_rows "embedding is null"; }
+
+cmd_search() {
+  [ $# -gt 0 ] || die "usage: kb search <words>"
+  psql -X -d $DB -v q="$*" <<'SQL'
+\pset footer off
+select stem, type, round(ts_rank(tsv, q)::numeric, 3) as rank,
+       ts_headline('english', body, q, 'MaxFragments=1, MaxWords=18, MinWords=8, StartSel=>>, StopSel=<<') as snippet
+  from memory, websearch_to_tsquery('english', :'q') q
+ where current and tsv @@ q order by rank desc limit 15;
+select stem, type, substring(body from '(?i).{0,40}' || :'q' || '.{0,40}') as fragment
+  from memory where current and body ilike '%' || :'q' || '%'
+   and not (tsv @@ websearch_to_tsquery('english', :'q')) limit 15;
+SQL
+}
+
+cmd_ask() {
+  [ $# -gt 0 ] || die "usage: kb ask <question>"
+  # qwen3-embedding ranks better when the query carries its instruction prefix (measured 11-03: rank 9 -> 3)
+  local v; v=$(printf 'Instruct: Given a question, retrieve the memory that answers it\nQuery: %s' "$*" | embed_text)
+  [ -n "$v" ] || die "could not embed the question (is ollama up? brew services start ollama)"
+  psql -X -d $DB -v v="$v" <<'SQL'
+\pset footer off
+select stem, type, round((embedding <=> :'v')::numeric, 3) as distance, left(regexp_replace(body, '\s+', ' ', 'g'), 80) as starts
+  from memory where current and embedding is not null order by embedding <=> :'v' limit 15;
+SQL
+}
+
+# psql -c does not substitute :'var'; stdin does, so every parameterized statement goes in on stdin
+cmd_show() {   # kb show <stem> [n]: the current body, or version n from `kb history`
+  [ $# -ge 1 ] && [ $# -le 2 ] || die "usage: kb show <stem> [version]"
+  local n=${2:-0} out
+  [[ $n =~ ^[0-9]+$ ]] || die "version must be a number from kb history"
+  out=$(psql -X -At -d $DB -v s="$1" -v n="$n" <<'SQL'
+with v as (select *, row_number() over (order by id) as ver, count(*) over () as versions from memory where stem = :'s')
+select '# ' || stem || ' · ' || type || ' · ' || (case when current then 'current' else 'version ' || ver || ' (not current)' end)
+       || ' · ' || created_at::date || ' · ' || versions || ' version' || (case when versions = 1 then '' else 's' end) || E'\n' || body
+  from v where (:n = 0 and current) or (:n > 0 and ver = :n);
+SQL
+  )
+  [ -n "$out" ] && printf '%s\n' "$out" || die "no $( [ "$n" = 0 ] && echo current memory || echo "version $n of" ) '$1'"
+}
+
+cmd_history() {   # every version of a stem, oldest first
+  [ $# -eq 1 ] || die "usage: kb history <stem>"
+  local out; out=$(psql -X -d $DB -v s="$1" <<'SQL'
+\pset footer off
+select row_number() over (order by id) as version, created_at::timestamp(0) as created, current,
+       left(regexp_replace(body, '\s+', ' ', 'g'), 70) as starts
+  from memory where stem = :'s' order by id;
+SQL
+  )
+  printf '%s\n' "$out" | grep -q '^ *[0-9]' && printf '%s\n' "$out" || die "no memory '$1'"
+}
+
+cmd_list() {
+  psql -X -d $DB -v t="${1:-%}" <<'SQL'
+\pset footer off
+select stem, type, created_at::date as since, embedding is not null as embedded
+  from memory where current and type like :'t' order by created_at desc, stem;
+SQL
+}
+
+body_arg() {   # body from the remaining args, else stdin
+  if [ $# -gt 0 ]; then printf '%s\n' "$*"; else cat; fi
+}
+cmd_add() {
+  [ $# -ge 2 ] || die "usage: kb add <stem> <type> [body]   (body on stdin if omitted)"
+  local stem=$1 type=$2; shift 2
+  [[ $stem =~ ^[a-z0-9_-]+$ ]] || die "stem must be [a-z0-9_-]+"
+  case "$type" in user|feedback|project|reference|note) ;; *) die "type must be user|feedback|project|reference|note" ;; esac
+  local body; body=$(body_arg "$@"); [ -n "${body//[[:space:]]/}" ] || die "empty body"
+  psqlq -v s="$stem" -v t="$type" -v b="$body" <<<"insert into memory (stem, type, body) values (:'s', :'t', :'b')" \
+    || die "add failed (stem already current? use kb edit)"
+  embed_rows "current and stem = '$stem' and embedding is null"
+}
+cmd_edit() {
+  [ $# -ge 1 ] || die "usage: kb edit <stem> [body]   (body on stdin if omitted)"
+  local stem=$1; shift
+  local body; body=$(body_arg "$@"); [ -n "${body//[[:space:]]/}" ] || die "empty body"
+  psql -X -At -d $DB -v s="$stem" <<<"select 1 from memory where current and stem = :'s'" | grep -q 1 || die "no current memory '$stem'"
+  psqlq -v s="$stem" -v b="$body" <<'SQL' || die "edit failed"
+begin;
+insert into memory (stem, type, body, current)
+select stem, type, :'b', false from memory where current and stem = :'s';
+update memory set current = false where current and stem = :'s';
+update memory set current = true where id = (select max(id) from memory where stem = :'s');
+commit;
+SQL
+  embed_rows "current and stem = '$stem' and embedding is null"
+}
+cmd_backup() {   # the db is the only copy, so the script (not a session's psql) takes the dumps
+  [ $# -le 1 ] || die "usage: kb backup [dir]"
+  local dir=${1:-$HERE/backups} f
+  # Sweep first: a memory file a session still wrote into
+  # memory/ is pulled in, then embedded, so every dump holds it. Neither step stops the dump.
+  ( cmd_load ) || echo "kb: load failed; backing up what is there" >&2
+  ( cmd_embed ) || echo "kb: embed failed; backing up anyway" >&2
+  mkdir -p "$dir" || die "cannot create $dir"
+  f=$dir/kb_$(date -u +%Y%m%dT%H%M%SZ).sql.gz
+  pg_dump --no-owner --no-privileges -d $DB | pigz -p 6 -6 > "$f"
+  local rc=("${PIPESTATUS[@]}")
+  [ "${rc[0]}" = 0 ] && [ "${rc[1]}" = 0 ] || { rm -f "$f"; die "pg_dump or pigz failed (rc ${rc[*]})"; }
+  pigz -t "$f" || die "backup $f is not a valid gzip"
+  [ "$(pigz -dc "$f" | grep -c '^COPY public.memory ')" = 1 ] || die "dump at $f has no memory table copy"
+  echo "kb: backup $f ($(du -h "$f" | cut -f1), $(psql -X -At -d $DB -c 'select count(*) from memory') rows); restore with: createdb kb_restored && pigz -dc $f | psql -d kb_restored"
+}
+
+# Backups thin out by age on the UTC clock: the last 48 h one per hour, then 30 six-hour slots
+# (00/06/12/18Z), then 7 days, then one per calendar month for good. Each slot keeps its OLDEST file, whatever
+# hour it was taken (a missed 00:00Z dump must not lose the month), so a slot is empty only when
+# no backup at all was taken in it.
+cmd_prune() {
+  [ $# -le 1 ] || die "usage: kb prune [dir]"
+  local dir=${1:-$HERE/backups} now f stamp t age slot kept=0 gone=0
+  now=$(date -u +%s)
+  for f in "$dir"/kb_*Z.sql.gz; do
+    [ -e "$f" ] || break
+    stamp=$(basename "$f"); stamp=${stamp#kb_}; stamp=${stamp%.sql.gz}      # YYYYMMDDTHHMMSSZ
+    [[ $stamp =~ ^([0-9]{8})T([0-9]{2})[0-9]{4}Z$ ]] || { echo "kb: prune skips $f (odd name)" >&2; continue; }
+    local d=${BASH_REMATCH[1]} h=${BASH_REMATCH[2]}
+    t=$(date -u -j -f %Y%m%dT%H%M%SZ "${d}T${h}0000Z" +%s) || { echo "kb: prune skips $f (bad stamp)" >&2; continue; }
+    age=$(( (now - t) / 3600 ))                                              # whole hours
+    if   (( age < 48 ));       then slot=h$d$h                               # one per hour
+    elif (( age < 48 + 180 )); then slot=s$d$(( 10#$h / 6 ))                 # one per six-hour slot
+    elif (( age < 48 + 348 )); then slot=d$d                                 # one per day
+    else                            slot=m${d:0:6}                           # one per month
+    fi
+    printf '%s\t%s\t%s\n' "$slot" "$stamp" "$f"
+  done | sort -k1,1 -k2,2 | awk -F'\t' '$1 == prev { print $3; next } { prev = $1 }' > "$TMP/prune"
+  while IFS= read -r f; do rm -f "${f:?}" && gone=$((gone+1)); done < "$TMP/prune"
+  kept=$(ls "$dir"/kb_*Z.sql.gz 2>&1 | grep -c '\.sql\.gz$')
+  echo "kb: prune kept $kept, removed $gone in $dir"
+}
+cmd_retire() {
+  [ $# -eq 1 ] || die "usage: kb retire <stem>"
+  local n; n=$(psql -X -At -q -d $DB -v s="$1" <<<"update memory set current = false where current and stem = :'s' returning 1" | grep -c 1)
+  [ "$n" = 1 ] && echo "kb: retired $1" || die "no current memory '$1'"
+}
+
+case "${1:-}" in
+  init|load|embed) "cmd_$1" ;;
+  search|ask|show|history|list|add|edit|retire|backup|prune) c=$1; shift; "cmd_$c" "$@" ;;
+  *) sed -n '2,17p' "$0"; exit 2 ;;
+esac

@@ -40,10 +40,11 @@ tree "$K/oversight_plugin" "$R/tools/oversight_plugin"
 tree "$K/personas" "$R/personas"
 tree "$K/bash_tricks" "$R/bash_tricks"
 tree "$K/templates" "$R"
+tree "$K/claude_kb" "$R/claude_kb"   # optional memory database: copied, but nothing is turned on (claude_kb/README.md)
 put "$K/house_rules.md" "$R/house_rules.md"
 tree "$K/hooks" "$H"
 echo "  files: $added new, $kept kept (existing files are never overwritten)"
-run chmod +x "$R"/tools/*.sh "$H"/risk-log.sh "$H"/heredoc-guard.sh "$H"/devnull-guard.sh "$H"/heredoc-guard-tests/run.sh
+run chmod +x "$R"/tools/*.sh "$H"/risk-log.sh "$H"/heredoc-guard.sh "$H"/devnull-guard.sh "$H"/heredoc-guard-tests/run.sh "$R"/claude_kb/kb "$R"/claude_kb/kb-guard.sh "$R"/claude_kb/memory-guard.sh
 
 # Every session launches with --settings tools/oversight_plugin/settings.json: it loads the plugin and passes TEAM_ROOT.
 S=$R/tools/oversight_plugin/settings.json
@@ -61,4 +62,11 @@ $(jq -n --arg h "$H" '{hooks: {PreToolUse: [
 Next 2: replace <OWNER> and <OWNER_ROLE_ONE_LINE> in $R/personas/cos.md and mgr.md, and review $R/house_rules.md.
 Next 3: test the hooks: $H/heredoc-guard-tests/run.sh
 Next 4: start the team: $K/start_team.sh
+
+Optional A: a local date and time line with each prompt, so a session knows when the owner wrote (merge into the same "hooks"):
+$(jq -n '{hooks: {UserPromptSubmit: [{hooks: [{type: "command", command: "date \"+[%Y-%m-%d %H:%M %Z -- $USER]\""}]}]}}')
+Optional B: the memory database (read $R/claude_kb/README.md first; it needs PostgreSQL, pgvector and ollama). Its two guards go into PreToolUse:
+$(jq -n --arg k "$R/claude_kb" '{hooks: {PreToolUse: [
+  {matcher: "Bash", hooks: [{type: "command", command: "\($k)/kb-guard.sh"}]},
+  {matcher: "Bash|Write|Edit|MultiEdit|NotebookEdit", hooks: [{type: "command", command: "\($k)/memory-guard.sh"}]}]}}')
 HOOKS

@@ -1,0 +1,2 @@
+# One row per oversight-plugin concern (mgr keeps this file). score = confirmed | partly | refuted | ignored
+# fork_at	step	concern	score	how_checked	sweep_later?

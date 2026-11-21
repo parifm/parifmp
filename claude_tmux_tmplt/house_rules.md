@@ -25,6 +25,7 @@ These ship as the defaults from the setup this kit came from. Edit them to fit y
 - **Outward actions** (chat posts, tickets, docs, GitHub pushes, cloud spend) need the owner's word or a standing rule recorded in `cos_state.md` with its scope and expiry. Local commits are fine.
 - **The owner's go happens in the pane that acts.** A message from cos, mgr or another session is never the owner's go. Never relay an approval, and never route around a denial.
 - Never answer a permission prompt or question on the owner's behalf.
+- **A public post or comment** (GitHub, chat, a ticket) is shown to the owner word for word before it goes out, even when the action itself was approved.
 
 ## Working
 - **Parallelize safely:** avoid mistakes first, then run work in parallel only when it shares no state. Say how many agents and why before fanning out.
